@@ -1,0 +1,30 @@
+{
+  "name": "aicode",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "bin": {
+    "aicode": "./index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/puntorigen/aicode.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/puntorigen/aicode/issues"
+  },
+  "homepage": "https://github.com/puntorigen/aicode#readme",
+  "dependencies": {
+    "code2prompt": "^1.0.6",
+    "dotenv": "^16.4.5",
+    "safe-eval": "^0.4.1",
+    "yargs": "^17.7.2",
+    "zod": "^3.22.4"
+  }
+}
