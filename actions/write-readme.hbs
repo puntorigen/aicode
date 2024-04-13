@@ -1,3 +1,6 @@
+```description
+Generates a README file for a project.
+```
 Project Path: {{ absolute_code_path }}
 
 I'd like you to generate a high-quality README file for this project, suitable for hosting on GitHub. Analyze the codebase to understand the purpose, functionality, and structure of the project. 
@@ -41,10 +44,11 @@ Feel free to infer reasonable details if needed, but try to stick to what can be
 
 ```js
 // nodejs code to run after getting results (runs within an isolated async function block)
-// context vars: results (schema), absolute_code_path, files, source_tree, etc (all the template vars)
+// context vars: schema (results), absolute_code_path, files, source_tree, etc (all the template vars)
 const fs = require('fs').promises;
-// save 'readme' results.readme contents to disk (abs)
-await fs.writeFile(`${absolute_code_path}/README.md`, results.readme, 'utf8');
+// save 'readme' schema.readme contents to disk (abs)
+await fs.writeFile(`${absolute_code_path}/README.md`, schema.readme, 'utf8');
+// if you return an object here, it will be available for the next code block
 ```
 
 ```bash

@@ -2,6 +2,7 @@
 
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
+const actionsIndex = require('./actions');
 
 const argv = yargs(hideBin(process.argv))
   .usage('Usage: $0 <command> [options]')
@@ -46,11 +47,54 @@ const { z } = require('zod');
         z.object({
             is_action: z.boolean().describe('True if the input is an action, False if the input is a question'),
             is_question: z.boolean().describe('True if the input is a question, True if the input is a question'),
-            language: z.string().describe('The language of the input in 2 letters (e.g. en, fr, es, etc.)'),
+            language: z.string().describe('2 letters language of the input (ex. en, fr, sp, etc.)'),
         })
     );
     console.log('is action or question?',action_or_question.data);
     // 1) if the input is an action, select the best action template from the availables and run it
+    if (action_or_question.data.is_action) {
+        const user_action = new actionsIndex(argv.input);
+        const prompt = await user_action.getPrompt();
+        let additional_context = { 
+            queryLLM:async(question,schema)=>{
+                return await general.queryLLM(question,schema); 
+            }
+        };
+        const action = await general.queryLLM(prompt,
+            z.object({
+                file: z.string().describe('the choosen template file'),
+                reason: z.string().describe('the reason why the template is the best for the user input'),
+            })
+        );
+        console.log('action',action.data);
+        // render the template using code2prompt
+        const actioncode = new code2prompt({
+            path: currentWorkingDirectory,
+            template: action.data.file,
+            extensions: [],
+            ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif"],
+            OPENAI_KEY: process.env.OPENAI_KEY
+        });
+        // get the code blocks
+        const code_helper = new (require('./helpers/codeBlocks'));
+        const context_prompt = await actioncode.generateContextPrompt(null,true);
+        const code_blocks = await actioncode.getCodeBlocks();
+        // check if we have 'pre:' code blocks (must run before the template)
+        //console.log('code_blocks for choosen template',code_blocks);
+        for (const block of code_blocks) {
+            // if block.lang contains 'pre:'
+            if (block.lang.startsWith('pre:js')) {
+                const code_executed = await code_helper.executeNode(additional_context,block.code);
+                // if code_executed is an object
+                if (typeof code_executed === 'object') {
+                    console.log('adding context from pre:js code block',code_executed);
+                    additional_context = {...additional_context,...code_executed};
+                }
+            }
+        }
+        // query the template
+        // check if we have none 'pre:' code blocks (must run after the template)
+    }
     // 2) if the input is a question, run the question to the model with the 'default-template' and return the response
 
     console.log(`Processing input: ${argv.input}`,currentWorkingDirectory,userOS);

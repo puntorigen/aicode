@@ -1,3 +1,7 @@
+```description
+Creates a reactJS webapp project.
+```
+
 ```pre:js 
 // javascript code to run on project before executing the template prompt
 // contains a 'context' object with the keys:
@@ -7,9 +11,13 @@
 // you also have some methods for asking info to the user like (await prompt)
 // anything queried to the user is translated to the user's language using the LLM
 const project_name = await prompt('What is the name of your project?')
-const app_name = await queryLLM('Create a reactJS app name for the following project: ' + project_name);
+const app_name = await queryLLM('Create a short folder name (max 10 chars without spaces) for the following text: ' + project_name, 
+    z.object({
+        name: z.string().describe('the reactjs folder name for the text'),
+    })
+);
 return {
-    app_name
+    app_name: app_name.data.name
 }
 ```
 
