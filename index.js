@@ -111,16 +111,42 @@ const { z } = require('zod');
             }
         });
         console.log('template_res',template_res);
-        // check if we have none ':pre' code blocks (must run after the template)
         // add results from template_res.data obj schema to additional_context object
         additional_context = {...additional_context, ...{
             schema:template_res.data
         }};
+        // check if we have none ':pre' code blocks (must run after the template)
+        for (const block of code_blocks) {
+            // if block.lang doesn't end with ':pre'
+            if (!block.lang.endsWith(':pre')) {
+                // if block.lang contains 'js'
+                if (block.lang.includes('js')) {
+                    const code_executed = await code_helper.executeNode(additional_context,block.code);
+                    // if code_executed is an object
+                    if (typeof code_executed === 'object') {
+                        console.log('adding context from post js code block',code_executed);
+                        additional_context = {...additional_context,...code_executed};
+                    }
+                }
+            }
+        }
+        //
+    } else if (action_or_question.data.is_question) {
+        // 2) if the input is a question, run the question to the model with the 'default-template' and return the response
+        const question = new code2prompt({
+            path: currentWorkingDirectory,
+            template: path.join(actionsDirectory,'default.md'),
+            extensions: [],
+            ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+            OPENAI_KEY: process.env.OPENAI_KEY
+        });
+        const response = await question.request(argv.input);
+        console.log('response:\n',response.data);
+    } else {
+        console.log('The input is not an action or a question.. exiting..');
+        console.log(`Processing input: ${argv.input}`,currentWorkingDirectory,userOS);
+        console.log(`Actions directory: ${actionsDirectory}`);
     }
-    // 2) if the input is a question, run the question to the model with the 'default-template' and return the response
-
-    console.log(`Processing input: ${argv.input}`,currentWorkingDirectory,userOS);
-    console.log(`Actions directory: ${actionsDirectory}`);
     if (argv.debug) {
         console.log('Debug mode is on');
     }
