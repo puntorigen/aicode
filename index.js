@@ -25,6 +25,7 @@ const argv = yargs(hideBin(process.argv))
 const code2prompt = require('code2prompt');
 const safeEval = require('safe-eval');
 const path = require('path');
+const fs = require('fs').promises;
 const currentWorkingDirectory = process.cwd();
 const actionsDirectory = path.join(__dirname, 'actions');
 require('dotenv').config();
@@ -38,7 +39,7 @@ const { z } = require('zod');
     // 0) determine if the input is an action or a question, and the user input language
     const general = new code2prompt({
         path: currentWorkingDirectory,
-        template: path.join(actionsDirectory,'default.hbs'),
+        template: path.join(actionsDirectory,'default.md'),
         extensions: ["js"],
         ignore: ["**/node_modules/**"],
         OPENAI_KEY: process.env.OPENAI_KEY
@@ -55,6 +56,7 @@ const { z } = require('zod');
     if (action_or_question.data.is_action) {
         const user_action = new actionsIndex(argv.input);
         const prompt = await user_action.getPrompt();
+        // declare methods for js code blocks
         let additional_context = { 
             queryLLM:async(question,schema)=>{
                 return await general.queryLLM(question,schema); 
@@ -72,28 +74,48 @@ const { z } = require('zod');
             path: currentWorkingDirectory,
             template: action.data.file,
             extensions: [],
-            ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif"],
+            ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
             OPENAI_KEY: process.env.OPENAI_KEY
         });
         // get the code blocks
         const code_helper = new (require('./helpers/codeBlocks'));
         const context_prompt = await actioncode.generateContextPrompt(null,true);
+        //console.log('context_prompt',context_prompt);
+        additional_context = {...additional_context,...{
+                absolute_code_path: context_prompt.context.absolutePath,
+                source_tree: context_prompt.context.sourceTree,
+                files: context_prompt.context.filesArray,
+            }
+        };
         const code_blocks = await actioncode.getCodeBlocks();
-        // check if we have 'pre:' code blocks (must run before the template)
+        // check if we have ':pre' code blocks (must run before the template)
         //console.log('code_blocks for choosen template',code_blocks);
         for (const block of code_blocks) {
-            // if block.lang contains 'pre:'
-            if (block.lang.startsWith('pre:js')) {
-                const code_executed = await code_helper.executeNode(additional_context,block.code);
-                // if code_executed is an object
-                if (typeof code_executed === 'object') {
-                    console.log('adding context from pre:js code block',code_executed);
-                    additional_context = {...additional_context,...code_executed};
+            // if block.lang ends with ':pre'
+            if (block.lang.endsWith(':pre')) {
+                // if block.lang contains 'js'
+                if (block.lang.includes('js')) {
+                    const code_executed = await code_helper.executeNode(additional_context,block.code);
+                    // if code_executed is an object
+                    if (typeof code_executed === 'object') {
+                        console.log('adding context from pre:js code block',code_executed);
+                        additional_context = {...additional_context,...code_executed};
+                    }
                 }
             }
         }
         // query the template
-        // check if we have none 'pre:' code blocks (must run after the template)
+        const template_res = await actioncode.request(argv.input, null, {
+            custom_variables: {
+                ...additional_context
+            }
+        });
+        console.log('template_res',template_res);
+        // check if we have none ':pre' code blocks (must run after the template)
+        // add results from template_res.data obj schema to additional_context object
+        additional_context = {...additional_context, ...{
+            schema:template_res.data
+        }};
     }
     // 2) if the input is a question, run the question to the model with the 'default-template' and return the response
 

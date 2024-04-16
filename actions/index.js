@@ -1,4 +1,4 @@
-// read all .hbs files in the current directory
+// read all .md files in the current directory
 // parse the md code-blocks looking for 'description' lang field blocks
 // create a prompt for the CLI to choose the best action template based on the user input
 //
@@ -15,8 +15,8 @@ class indexFolder {
     }
 
     async initialize() {
-        // traverse current folder and read all .hbs files
-        const files = await glob('**/*.hbs', { cwd: this.currentFolder, nodir:true, absolute:true });
+        // traverse current folder and read all .md (with hbs) files
+        const files = await glob('**/*.md', { cwd: this.currentFolder, nodir:true, absolute:true });
         for (const file of files) {
             // read 'file' contents
             const content = await fs.readFile(file, 'utf-8');
