@@ -17,6 +17,12 @@ const argv = yargs(hideBin(process.argv))
     type: 'boolean',
     description: 'Run with debug output',
   })
+  .option('language', {
+    alias: 'l',
+    type: 'string',
+    default: 'English',
+    description: 'Language for the output',
+  })
   .help('h')
   .alias('h', 'help')
   .parse();
@@ -31,6 +37,21 @@ const actionsDirectory = path.join(__dirname, 'actions');
 require('dotenv').config();
 const os = require('os');
 const { z } = require('zod');
+const x_console = new (require('@concepto/console'))();
+x_console.setColorTokens({
+    '*':'yellow',
+    '#':'cyan',
+    '@':'green'
+});
+x_console.setPrefix({ prefix:'aicode', color:'cyan' });
+const marked = require('marked');
+const { log } = require('console');
+const TerminalRenderer = require('marked-terminal').default;
+
+marked.setOptions({
+    // Define custom renderer
+    renderer: new TerminalRenderer()
+});
 
 // Process the input
 !(async () => {
@@ -48,7 +69,7 @@ const { z } = require('zod');
         z.object({
             is_action: z.boolean().describe('True if the input is an action, False if the input is a question'),
             is_question: z.boolean().describe('True if the input is a question, True if the input is a question'),
-            language: z.string().describe('2 letters language of the input (ex. en, fr, sp, etc.)'),
+            language: z.enum(['English','Spanish','Portuguese','French','Japanese']).describe('language of the given input'),
         })
     );
     console.log('is action or question?',action_or_question.data);
@@ -60,7 +81,14 @@ const { z } = require('zod');
         let additional_context = { 
             queryLLM:async(question,schema)=>{
                 return await general.queryLLM(question,schema); 
-            }
+            },
+            writeFile:async(file,content)=>{
+                return await fs.writeFile(file,content, 'utf8');
+            },
+            log:(message,data)=>{
+                x_console.out({ prefix:'action', message, data });
+            },
+            language:action_or_question.data.language,
         };
         const action = await general.queryLLM(prompt,
             z.object({
@@ -98,7 +126,7 @@ const { z } = require('zod');
                     const code_executed = await code_helper.executeNode(additional_context,block.code);
                     // if code_executed is an object
                     if (typeof code_executed === 'object') {
-                        console.log('adding context from pre:js code block',code_executed);
+                        //console.log('adding context from pre:js code block',code_executed);
                         additional_context = {...additional_context,...code_executed};
                     }
                 }
@@ -124,7 +152,7 @@ const { z } = require('zod');
                     const code_executed = await code_helper.executeNode(additional_context,block.code);
                     // if code_executed is an object
                     if (typeof code_executed === 'object') {
-                        console.log('adding context from post js code block',code_executed);
+                        //console.log('adding context from post js code block',code_executed);
                         additional_context = {...additional_context,...code_executed};
                     }
                 }
@@ -140,8 +168,9 @@ const { z } = require('zod');
             ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
             OPENAI_KEY: process.env.OPENAI_KEY
         });
-        const response = await question.request(argv.input);
-        console.log('response:\n',response.data);
+        const response = await question.request(`# Act as a friendly and expert file analyst with 20 years of experience in several programming languages. Analyze the provided codebase sourcetree and files, determine the functionality and then using that info answer the following user question using markdown syntax, nice formatting (emoji's,tables,titles) in a friendly tone using short sentences (max 60 chars per line, avoiding word wrapping). Always reply the specific question asked using the provided context and codebase references and nothing else:\n${argv.input}`);
+        x_console.out({ message:marked.parse(response.data) });
+        //console.log('response:\n',response.data);
     } else {
         console.log('The input is not an action or a question.. exiting..');
         console.log(`Processing input: ${argv.input}`,currentWorkingDirectory,userOS);
