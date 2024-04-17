@@ -67,14 +67,15 @@ marked.setOptions({
     });
     const action_or_question = await general.queryLLM('# Is the following text an action or a question?\n'+argv.input,
         z.object({
-            is_action: z.boolean().describe('True if the input is an action, False if the input is a question'),
-            is_question: z.boolean().describe('True if the input is a question, True if the input is a question'),
+            type_of: z.enum(['action','question','instruction']).describe('Type of the input'),
+            //is_action: z.boolean().describe('True if the input is an action, False if the input is a question'),
+            //is_question: z.boolean().describe('True if the input is a question, True if the input is a question'),
             language: z.enum(['English','Spanish','Portuguese','French','Japanese']).describe('language of the given input'),
         })
     );
     console.log('is action or question?',action_or_question.data);
     // 1) if the input is an action, select the best action template from the availables and run it
-    if (action_or_question.data.is_action) {
+    if (action_or_question.data.type_of === 'action') {
         const user_action = new actionsIndex(argv.input);
         const prompt = await user_action.getPrompt();
         // declare methods for js code blocks
@@ -159,7 +160,7 @@ marked.setOptions({
             }
         }
         //
-    } else if (action_or_question.data.is_question) {
+    } else if (action_or_question.data.type_of === 'question' || action_or_question.data.type_of === 'instruction') {
         // 2) if the input is a question, run the question to the model with the 'default-template' and return the response
         const question = new code2prompt({
             path: currentWorkingDirectory,
@@ -168,7 +169,11 @@ marked.setOptions({
             ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
             OPENAI_KEY: process.env.OPENAI_KEY
         });
-        const response = await question.request(`# Act as a friendly and expert file analyst with 20 years of experience in several programming languages. Analyze the provided codebase sourcetree and files, determine the functionality and then using that info answer the following user question using markdown syntax, nice formatting (emoji's,tables,titles) in a friendly tone using short sentences (max 60 chars per line, avoiding word wrapping). Always reply the specific question asked using the provided context and codebase references and nothing else:\n${argv.input}`);
+        let prompt_ = `# Act as a friendly and expert generalist analyst with 20 years of experience in several programming languages. Analyze the provided codebase sourcetree and files, determine the functionality and then using that info alongside the sourcetree and code sources, answer the following user question in detail, using markdown syntax, nice formatting (emoji's,tables,titles) in a friendly tone using short sentences (max 60 chars per line, avoiding word wrapping). Always reply the specific question asked using the provided context and codebase references and nothing else:\n${argv.input}`;
+        if (action_or_question.data.type_of === 'instruction') {
+            prompt_ = `# Act as an expert software engineer, analize the following question and provide a detailed answer using the provided context and codebase references (use markdown):\n${argv.input}`;
+        }
+        const response = await question.request(prompt_);
         x_console.out({ message:marked.parse(response.data) });
         //console.log('response:\n',response.data);
     } else {
