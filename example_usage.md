@@ -8,9 +8,9 @@ aicode "document this project"
 aicode "document this project in japanese"
 ```
 
-# You can also ask questions about a project folder
+# You can also ask calculated questions about a project folder or file
 ```bash
-aicode "how many lines of code does this project have?"
+aicode "count the number of lines of index.js"
 ```
 
 # Or anything about a project folder
