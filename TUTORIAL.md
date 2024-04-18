@@ -1,39 +1,47 @@
-# AI Code — Project Walkthrough Tutorial
+# Tutorial - Project Overview: aicode
 
-The AI Code project is a command-line application developed by Pablo Schaffner, designed to automate support for code development. This tutorial will guide you through its main files, framework, and how to use it effectively.
+This tutorial is aimed at explaining the basic overview of the *aicode* project, constructed by Pablo Schaffner. This project is a command-line driven application that provides automation support for code development. Think of this application as a powerful tool for automating tedious tasks and enhancing productivity.
 
-## Getting Started
+## Baseline
 
-**Installation**
+The root folder of the application consists of several integral files:
 
-AI Code can be installed into your project using npm with the command `npm install aicode`. The following dependencies would be installed with it as defined in `package.json`:
+- `package.json`: This file contains meta-data about your app, along with its dependencies. Aicode uses numerous packages such as yargs for command-line parsing, glob for directory parsing, dotenv for environment variable management, and more.
 
-- `@concepto/console`: for console formatting
-- `code-blocks`: for retrieval and execution of code snippets
-- `code2prompt`: for creating interaction prompts within the application
-- and various other dependencies for languages, debugging, and rendering.
+- `index.js`: This JavaScript file is the primary entry point of the application. It initializes the command-line interface (CLI) using `yargs`, handles user-inputs, and initiates the appropriate actions based on the inputs. It is here where most *action queries* are directed and served by referencing other files in the 'actions' directory.
 
-To ensure the package is installed correctly, check the 'main' key in package.json is set to 'index.js'. That is the main entry point of our application.
+- `example_usage.md`: This file includes some example commands that you can use with the application.
 
-## How to Use AI Code
+- `README.md`: The README provides a basic introductory overview to the project, its features, and some usage examples.
 
-In `example_usage.md`, several standard commands you can run with AI Code are detailed. These commands can be used to generate project documentation, ask questions about a codebase, and more specifically to a file, etc. The AI Code utility uses a simple syntax that consists of the name 'aicode' followed by your command in quotes. For example, you can generate a README file for your project with `aicode 'document this project'`.
+- `TUTORIAL.md`: A tutorial guide for understanding the AI Code project.
 
-## Under the Hood
+- `helpers/codeBlocks.js`: This helper file runs JavaScript code blocks that provide the context for handling user actions.
 
-Let's breakdown the main script in `index.js`.
+- `actions`: This directory contains different markdown files, each representing possible AI Code commands. These action commands can be anything from writing a tutorial to answering a user query.
 
-This scripts begins by importing necessary modules and executing configuration setup for the command-line interface (CLI). It relies heavily on `yargs` to parse and interpret the user-supplied commands. After initializing some variables, the script executes a sequence of actions: determining the user's operating system, deciding whether the user command is a question or action, running the best-fit template action for user input, and processing the input.
+In summary, the aicode is basically made of command-line interface parsing and action handling logic, which are centered around the `index.js` file, and a set of 'action' markdown files inside the `actions` folder. Each of these 'actions' are designed to handle a specific request from the user input.
 
-The `actions` directory contains markdown files, each representing possible AI Code commands. A couple of them (`write-tutorial.md`, `write-readme.md`) are executed when user input matches a command to generate a README or tutorial.
+## How to Use AICODE
 
-In `helpers/codeBlocks.js`, some helper methods for executing actions and providing context for them are defined.
+Using the application is relatively simple. Here are few examples:
 
-## Creating Your Actions
+- To generate a ReadMe file for your project's root, you can simply run:
 
-In the `actions` directory, you can create your own user commands. Each file represents an action and inside, it contains sets of instructions for AI Code to follow.
+```bash
+aicode 'document this project'
+```
 
-## Summary
+- To ask how many lines of code are in a specific JavaScript file, you can ask:
 
-With AI Code, you can make coding and documentation easier and more interactive. You can create custom command-line interfaces (CLIs), automate documentation, and with the help of powerful AI algorithms, even make your coding assistant smarter by teaching it new commands.
+```bash
+aicode 'count the number of lines of index.js'
+```
+
+## Creating Custom Actions
+
+Perhaps what's most exciting with aicode is the ability for you to create your own user commands. You can easily do that by adding your command markdown file inside the `actions` directory.
+
+In conclusion, the aicode tool provides you a cleverly automated workflow for managing your code development process. You can simply interact with the CLI, instruct it with your needs, and let the tool do the tedious work, making you focus more on solving problems and creating remarkable products.
+
 ### Generated by aicode

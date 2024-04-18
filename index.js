@@ -4,7 +4,7 @@ const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const actionsIndex = require('./actions');
 
-const argv = yargs(hideBin(process.argv))
+let argv = yargs(hideBin(process.argv))
   .usage('Usage: $0 <command> [options]')
   .command('$0 <input>', 'Process the input', (yargs) => {
     yargs.positional('input', {
@@ -39,9 +39,11 @@ const os = require('os');
 const { z } = require('zod');
 const x_console = new (require('@concepto/console'))();
 x_console.setColorTokens({
-    '*':'yellow',
+    '*':'magenta',
     '#':'cyan',
-    '@':'green'
+    '@':'green',
+    '!':'blue',
+    '?':'yellow',
 });
 x_console.setPrefix({ prefix:'aicode', color:'cyan' });
 const marked = require('marked');
@@ -56,6 +58,13 @@ marked.setOptions({
 
 // Process the input
 !(async () => {
+    // show aicode logo
+    const progress = x_console.spinner({
+        prefix:'aicode', color:'green'
+    });
+    progress.text('*analyzing ...*')
+    progress.start();
+    //x_console.title({ title:'aicode', color:'magenta', titleColor:'white'})
     // -1) determine OS of the user
     const userOS = os.platform();
     // 0) determine if the input is an action or a question, and the user input language
@@ -66,27 +75,36 @@ marked.setOptions({
         ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
         OPENAI_KEY: process.env.OPENAI_KEY
     });
-    const action_or_question = await general.queryLLM('# Is the following text an action or a question?\n'+argv.input,
+    const initial_analysis = await general.queryLLM('# Analyze the following text and return if its an action or a question, it\'s language and an english version of it:\n'+argv.input,
         z.object({
             type_of: z.enum(['action','question']).describe('Type of the input'),
+            english: z.string().describe('English version of text'),
             //is_action: z.boolean().describe('True if the input is an action, False if the input is a question'),
             //is_question: z.boolean().describe('True if the input is a question, True if the input is a question'),
             language: z.enum(['English','Spanish','Portuguese','French','Japanese']).describe('language of the given input'),
         })
     );
-    console.log('is action or question?',action_or_question.data);
+    if (initial_analysis.data.language) {
+        argv.language = initial_analysis.data.language;
+    }
+    progress.text(`*analyzing ...* #${initial_analysis.data.english}#`)
+    //progress.stop();
+    //console.log('initial input analysis?',initial_analysis.data);
     // 1) if the input is an action, select the best action template from the availables and run it
-    if (action_or_question.data.type_of === 'action') {
+    //if (action_or_question.data.type_of === 'action') {
+    if (true) { // always run this block
         const user_action = new actionsIndex(argv.input);
         const prompt = await user_action.getPrompt();
         // which action template should we use ?
         const action = await general.queryLLM(prompt,
             z.object({
-                file: z.string().describe('the choosen template file'),
+                file: z.string().describe('just the absolute choosen template file'),
                 reason: z.string().describe('the reason why the template is the best for the user input'),
             })
         );
-        console.log('action',action.data);
+        progress.text(`#reasoning ...# !${action.data.reason}!`)
+        
+        //console.log('action',action.data);
         // declare methods for js code blocks
         let additional_context = { 
             queryLLM:async(question,schema)=>{
@@ -116,13 +134,18 @@ marked.setOptions({
             readFile:async(file)=>{
                 return await fs.readFile(path.join(currentWorkingDirectory,file), 'utf8');
             },
+            renderMD:(text)=>{
+                return marked.parse(text);
+            },
             log:(message,data,color='cyan')=>{
                 // extract just the filename from action.data.file (abs)
                 const template_ = action.data.file.split('/').pop().replace('.md','');
                 x_console.out({ prefix:'action:'+template_, color, message, data });
             },
             user_prompt: argv.input,
-            language:action_or_question.data.language,
+            english_user_prompt: initial_analysis.data.english,
+            argv,userOS,progress,
+            language:initial_analysis.data.language,
         };
         additional_context = {...additional_context,...{
             executeScript:async(code)=>{
@@ -141,14 +164,10 @@ marked.setOptions({
         });
         // get the code blocks
         const code_helper = new (require('./helpers/codeBlocks'));
-        const context_prompt = await actioncode.generateContextPrompt(null,true);
+        const context_prompt = await actioncode.generateContextPrompt(null,true,additional_context);
         //console.log('context_prompt',context_prompt);
-        additional_context = {...additional_context,...{
-                absolute_code_path: context_prompt.context.absolutePath,
-                source_tree: context_prompt.context.sourceTree,
-                files: context_prompt.context.filesArray,
-            }
-        };
+        progress.text(`?generating answer ...? #using ${action.data.file}#`);
+        additional_context = {...additional_context,...context_prompt.context};
         const code_blocks = await actioncode.getCodeBlocks();
         // check if we have ':pre' code blocks (must run before the template)
         //console.log('code_blocks for choosen template',code_blocks);
@@ -168,7 +187,7 @@ marked.setOptions({
         }
         // query the template (if it's not empty or just scripts)
         if (context_prompt.rendered.trim() !== '') {        
-            const template_res = await actioncode.request(argv.input, null, {
+            const template_res = await actioncode.request(initial_analysis.data.english, null, {
                 custom_variables: {
                     ...additional_context
                 }
@@ -194,27 +213,8 @@ marked.setOptions({
                 }
             }
         }
+        progress.stop();
         //
-    } else if (action_or_question.data.type_of === 'question' || action_or_question.data.type_of === 'instruction') {
-        // 2) if the input is a question, run the question to the model with the 'default-template' and return the response
-        const question = new code2prompt({
-            path: currentWorkingDirectory,
-            template: path.join(actionsDirectory,'default.md'),
-            extensions: [],
-            ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-            OPENAI_KEY: process.env.OPENAI_KEY
-        });
-        let prompt_ = `# Act as a friendly and expert generalist analyst with 20 years of experience in several programming languages. Analyze the provided codebase sourcetree and files, determine the functionality and then using that info alongside the sourcetree and code sources, answer the following user question in detail, using markdown syntax, nice formatting (emoji's,tables,titles) in a friendly tone using short sentences (max 60 chars per line, avoiding word wrapping). Always reply the specific question asked using the provided context and codebase references and nothing else:\n${argv.input}`;
-        if (action_or_question.data.type_of === 'instruction') {
-            prompt_ = `# Act as an expert software engineer, analize the following question and provide a detailed answer using the provided context and codebase references (use markdown):\n${argv.input}`;
-        }
-        const response = await question.request(prompt_);
-        x_console.out({ message:marked.parse(response.data) });
-        //console.log('response:\n',response.data);
-    } else {
-        console.log('The input is not an action or a question.. exiting..');
-        console.log(`Processing input: ${argv.input}`,currentWorkingDirectory,userOS);
-        console.log(`Actions directory: ${actionsDirectory}`);
     }
     if (argv.debug) {
         console.log('Debug mode is on');

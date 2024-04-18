@@ -32,7 +32,7 @@ class indexFolder {
 
     async getPrompt() {
         await this.initialize();
-        let prompt = `Given the following user input text:\n\n${this.input}\n\nPlease select the most suitable action template file from the availables and their description relateness to the user text:\n\n`;
+        let prompt = `Given the following user input text:\n\n${this.input}\n\nPlease select the most suitable template file from the availables and their description relateness to the user text:\n\n`;
         for (const block of this.code_blocks) {
             prompt += `file:${block.file}\ndescription:\n${block.content}\n\n`;
         }
