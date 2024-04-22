@@ -5,6 +5,7 @@ const { hideBin } = require('yargs/helpers');
 const actionsIndex = require('./actions');
 
 let argv = yargs(hideBin(process.argv))
+  .scriptName('aicode')
   .usage('Usage: $0 <command> [options]')
   .command('$0 <input>', 'Process the input', (yargs) => {
     yargs.positional('input', {
@@ -141,6 +142,24 @@ marked.setOptions({
                 // extract just the filename from action.data.file (abs)
                 const template_ = action.data.file.split('/').pop().replace('.md','');
                 x_console.out({ prefix:'action:'+template_, color, message, data });
+            },
+            modules: {
+                screenshot: require('screenshot-desktop'),
+                clipboard: {
+                    paste: async()=>{
+                        const clipboard = require("copy-paste");
+                        const paste_ = new Promise((resolve, reject) => {
+                            clipboard.paste((error, data) => {
+                                if (error) {
+                                    reject(error);
+                                } else {
+                                    resolve(data);
+                                }
+                            });
+                        });
+                        return await paste_;
+                    }
+                }
             },
             user_prompt: argv.input,
             english_user_prompt: initial_analysis.data.english,
