@@ -76,6 +76,7 @@ marked.setOptions({
         ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
         OPENAI_KEY: process.env.OPENAI_KEY
     });
+    general.registerFileViewer('png',(file)=>'--query me if you need data about this file--');
     const initial_analysis = await general.queryLLM('# Analyze the following text and return if its an action or a question, it\'s language and an english version of it:\n'+argv.input,
         z.object({
             type_of: z.enum(['action','question']).describe('Type of the input'),

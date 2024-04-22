@@ -23,7 +23,7 @@
   "dependencies": {
     "@concepto/console": "^1.2.68",
     "code-blocks": "^1.1.0",
-    "code2prompt": "^1.0.81",
+    "code2prompt": "^1.0.83",
     "copy-paste": "^1.5.3",
     "dotenv": "^16.4.5",
     "glob": "^10.3.12",
