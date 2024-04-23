@@ -16,6 +16,11 @@ aicode "creame un perfil de usuario para pablo@x.com"
 
 aicode "usa de contexto la carpeta que tengo abierta en mi escritorio, y dime que documentos hablan de inmobiliarias"
 
+#opens the user camera, takes a picture and compares it to a previous picture to determine if the user has changed (osascript, history per template db)
+aicode "como me veo hoy"
+
+aicode "busca en internet información sobre lo que tengo en la mano"
+
 #describe el estilo de escribir correos del usuario y la asocia al perfil de usuario en bd interna
 aicode "lee mis correos enviados y asigname un perfil de escritura"
 #[aicode]: ¿cual es tu correo? (si hay más de uno en perfil)
