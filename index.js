@@ -134,15 +134,14 @@ marked.setOptions({
             //is_action: z.boolean().describe('True if the input is an action, False if the input is a question'),
             //is_question: z.boolean().describe('True if the input is a question, True if the input is a question'),
             language: z.enum(['English','Spanish','Portuguese','French','Japanese']).describe('language of the given input'),
+            language_code: z.enum(['en','es','pt','fr','ja']).describe('ISO-639 language code of the given input'),
         })
     );
     if (initial_analysis.data.language) {
         argv.language = initial_analysis.data.language;
     }
-    const ui_lang = new Translator('ui',argv.language,async(question,schema)=>{
-        return await general.queryLLM(question,schema); 
-    });
-    progress.text(`*analyzing ...* #${initial_analysis.data.english}#`)
+    const ui_lang = new Translator('ui',initial_analysis.data.language_code);
+    progress.text(`*analyzing ...* #${initial_analysis.data.english} (${initial_analysis.data.language_code})#`)
     //progress.stop();
     //console.log('initial input analysis?',initial_analysis.data);
     // 1) if the input is an action, select the best action template from the availables and run it
@@ -231,7 +230,7 @@ marked.setOptions({
             },
             ask: async(question)=>{
                 // ask the user a question in the input language
-                const translation = new Translator('ui',argv.language,general.queryLLM);
+                const translation = new Translator('ui',initial_analysis.data.language_code);
                 const translated = await translation.t(question);
                 const response = await prompts({
                     type: 'text',
@@ -242,8 +241,8 @@ marked.setOptions({
             },
             answer: async(text)=>{
                 // answer the user in the input language
-                const translation = new Translator('ui',argv.language,general.queryLLM);
-                const translated = await translation.t(question);
+                const translation = new Translator('ui',initial_analysis.data.language_code);
+                const translated = await translation.t(text);
                 const template_ = action.data.file.split('/').pop().replace('.md','');
                 x_console.out({ prefix:'action:'+template_, color:'cyan', message:translated });
             },
@@ -251,6 +250,7 @@ marked.setOptions({
             english_user_prompt: initial_analysis.data.english,
             argv,userOS,progress,
             language:initial_analysis.data.language,
+            language_code:initial_analysis.data.language_code,
         };
         // render the template using code2prompt
         const actioncode = new code2prompt({
