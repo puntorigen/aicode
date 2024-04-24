@@ -51,6 +51,9 @@ const marked = require('marked');
 const { log } = require('console');
 const { readFile } = require('fs');
 const TerminalRenderer = require('marked-terminal').default;
+const prompts = require('prompts');
+const EncryptedJsonDB = require('./helpers/db');
+const Translator = require('./helpers/translator');
 
 marked.setOptions({
     // Define custom renderer
@@ -59,10 +62,56 @@ marked.setOptions({
 
 // Process the input
 !(async () => {
+    // load config data
+    const db_keys = new EncryptedJsonDB('keys.json');
+    let db_keys_data = db_keys.load();
+    let key_providers = Object.keys(db_keys_data);
+    if (key_providers.length==0) {
+        // only ask any supported API, if there are no API providers set yet
+        // OPENAI
+        if (!process.env.OPENAI_KEY && !db_keys_data.OPENAI_KEY) {
+            // prompt for OPENAI_KEY
+            db_keys_data.OPENAI_KEY = (
+                await prompts({
+                    type: 'text',
+                    name: 'value',
+                    message: x_console.colorize('Enter your OPENAI API key (or empty if none):')
+                })
+            ).value;
+
+        } else if (process.env.OPENAI_KEY && !db_keys_data.OPENAI_KEY) {
+            // save OPENAI env into db_keys
+            db_keys_data.OPENAI_KEY = process.env.OPENAI_KEY;
+        }
+        // GROQ
+        if (!process.env.GROQ_KEY && !db_keys_data.GROQ_KEY) {
+            // prompt for GROQ_KEY
+            db_keys_data.GROQ_KEY = (
+                await prompts({
+                    type: 'text',
+                    name: 'value',
+                    message: x_console.colorize('Enter your GROQ API key (or empty if none):')
+                })
+            ).value;
+
+        } else if (process.env.GROQ_KEY && !db_keys_data.GROQ_KEY) {
+            // save GROQ_KEY env into db_keys
+            db_keys_data.GROQ_KEY = process.env.GROQ_KEY;
+        }
+        // we need at least 1 key
+        if (db_keys_data.GROQ_KEY.trim() == '' && db_keys_data.OPENAI_KEY.trim() == '') {
+            x_console.out({ prefix:'aicode', color:'brightRed', message:'You need to set at least one API key to continue. Quitting.' });
+            process.exit(1);
+        }
+        //
+        db_keys.save(db_keys_data);
+    }
+    // INIT
     // show aicode logo
     const progress = x_console.spinner({
         prefix:'aicode', color:'green'
     });
+    //
     progress.text('*analyzing ...*')
     progress.start();
     //x_console.title({ title:'aicode', color:'magenta', titleColor:'white'})
@@ -74,7 +123,8 @@ marked.setOptions({
         template: path.join(actionsDirectory,'default.md'),
         extensions: [],
         ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-        OPENAI_KEY: process.env.OPENAI_KEY
+        OPENAI_KEY: db_keys_data.OPENAI_KEY,
+        GROQ_KEY: db_keys_data.GROQ_KEY
     });
     general.registerFileViewer('png',(file)=>'--query me if you need data about this file--');
     const initial_analysis = await general.queryLLM('# Analyze the following text and return if its an action or a question, it\'s language and an english version of it:\n'+argv.input,
@@ -89,6 +139,9 @@ marked.setOptions({
     if (initial_analysis.data.language) {
         argv.language = initial_analysis.data.language;
     }
+    const ui_lang = new Translator('ui',argv.language,async(question,schema)=>{
+        return await general.queryLLM(question,schema); 
+    });
     progress.text(`*analyzing ...* #${initial_analysis.data.english}#`)
     //progress.stop();
     //console.log('initial input analysis?',initial_analysis.data);
@@ -123,7 +176,8 @@ marked.setOptions({
                     template: path.join(actionsDirectory,template_),
                     extensions: [],
                     ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-                    OPENAI_KEY: process.env.OPENAI_KEY
+                    OPENAI_KEY: db_keys_data.OPENAI_KEY,
+                    GROQ_KEY: db_keys_data.GROQ_KEY
                 });
                 return await specific.request(question,null,{
                     //custom_context,
@@ -144,6 +198,19 @@ marked.setOptions({
                 const template_ = action.data.file.split('/').pop().replace('.md','');
                 x_console.out({ prefix:'action:'+template_, color, message, data });
             },
+            db: {
+                engine: EncryptedJsonDB,
+                save: (file,data)=>{
+                    const db = new EncryptedJsonDB(file);
+                    let db_data = db.load();
+                    db_data = {...db_data,...data};
+                    db.save(data);
+                },
+                load: (file)=>{
+                    const db = new EncryptedJsonDB(file);
+                    return db.load();
+                },
+            },
             modules: {
                 screenshot: require('screenshot-desktop'),
                 clipboard: {
@@ -162,77 +229,40 @@ marked.setOptions({
                     }
                 }
             },
+            ask: async(question)=>{
+                // ask the user a question in the input language
+                const translation = new Translator('ui',argv.language,general.queryLLM);
+                const translated = await translation.t(question);
+                const response = await prompts({
+                    type: 'text',
+                    name: 'value',
+                    message: translated
+                });
+                return response.value;
+            },
+            answer: async(text)=>{
+                // answer the user in the input language
+                const translation = new Translator('ui',argv.language,general.queryLLM);
+                const translated = await translation.t(question);
+                const template_ = action.data.file.split('/').pop().replace('.md','');
+                x_console.out({ prefix:'action:'+template_, color:'cyan', message:translated });
+            },
             user_prompt: argv.input,
             english_user_prompt: initial_analysis.data.english,
             argv,userOS,progress,
             language:initial_analysis.data.language,
         };
-        additional_context = {...additional_context,...{
-            executeScript:async(code)=>{
-                const code_executed = await code_helper.executeNode(additional_context,code);
-                return code_executed;
-            }
-        }};
-
         // render the template using code2prompt
         const actioncode = new code2prompt({
             path: currentWorkingDirectory,
             template: action.data.file,
             extensions: [],
             ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-            OPENAI_KEY: process.env.OPENAI_KEY
+            OPENAI_KEY: db_keys_data.OPENAI_KEY,
+            GROQ_KEY: db_keys_data.GROQ_KEY
         });
-        // get the code blocks
-        const code_helper = new (require('./helpers/codeBlocks'));
-        const context_prompt = await actioncode.generateContextPrompt(null,true,additional_context);
-        //console.log('context_prompt',context_prompt);
         progress.text(`?generating answer ...? #using ${action.data.file}#`);
-        additional_context = {...additional_context,...context_prompt.context};
-        const code_blocks = await actioncode.getCodeBlocks();
-        // check if we have ':pre' code blocks (must run before the template)
-        //console.log('code_blocks for choosen template',code_blocks);
-        for (const block of code_blocks) {
-            // if block.lang ends with ':pre'
-            if (block.lang.endsWith(':pre')) {
-                // if block.lang contains 'js'
-                if (block.lang.includes('js')) {
-                    const code_executed = await code_helper.executeNode(additional_context,block.code);
-                    // if code_executed is an object
-                    if (typeof code_executed === 'object') {
-                        //console.log('adding context from pre:js code block',code_executed);
-                        additional_context = {...additional_context,...code_executed};
-                    }
-                }
-            }
-        }
-        // query the template (if it's not empty or just scripts)
-        if (context_prompt.rendered.trim() !== '') {        
-            const template_res = await actioncode.request(initial_analysis.data.english, null, {
-                custom_variables: {
-                    ...additional_context
-                }
-            });
-            //console.log('template_res',template_res);
-            // add results from template_res.data obj schema to additional_context object
-            additional_context = {...additional_context, ...{
-                schema:template_res.data
-            }};
-        }
-        // check if we have none ':pre' code blocks (must run after the template)
-        for (const block of code_blocks) {
-            // if block.lang doesn't end with ':pre'
-            if (!block.lang.endsWith(':pre')) {
-                // if block.lang contains 'js'
-                if (block.lang.includes('js')) {
-                    const code_executed = await code_helper.executeNode(additional_context,block.code);
-                    // if code_executed is an object
-                    if (typeof code_executed === 'object') {
-                        //console.log('adding context from post js code block',code_executed);
-                        additional_context = {...additional_context,...code_executed};
-                    }
-                }
-            }
-        }
+        const context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, additional_context)
         progress.stop();
         //
     }
