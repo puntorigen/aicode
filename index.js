@@ -3,32 +3,48 @@
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const actionsIndex = require('./actions');
+const getSystemLocale = require('./helpers/lang')();
+//console.log('getSystemLocale',getSystemLocale);
+
+const __ = require('y18n')({
+    directory: __dirname + '/locales',
+    locale: getSystemLocale,
+}).__;
 
 let argv = yargs(hideBin(process.argv))
   .scriptName('aicode')
-  .usage('Usage: $0 <command> [options]')
-  .command('$0 <input>', 'Process the input', (yargs) => {
+  .locale(getSystemLocale)
+  .usage(__('Usage: $0 <command> [options]'))
+  .command('$0 <input>', __('Process the input'), (yargs) => {
     yargs.positional('input', {
-      describe: 'Input string to process',
+      describe: __('Input string to process'),
       type: 'string',
     })
   })
   .option('debug', {
     alias: 'd',
     type: 'boolean',
-    description: 'Run with debug output',
+    description: __('Run with debug output'),
   })
   .option('language', {
     alias: 'l',
     type: 'string',
-    default: 'English',
-    description: 'Language for the output',
+    //default: 'English',
+    description: __('Language for the output'),
   })
   .help('h')
   .alias('h', 'help')
   .parse();
 
+// trap exit signals
+process.on('SIGINT', () => {
+    console.log('CTRL+C detected. Exiting gracefully...');
+    // Perform any cleanup, if necessary
+    process.exit(0); // Exit normally
+});
+
 // Initialize the required variables
+const ISO6391 = require('iso-639-1')
 const code2prompt = require('code2prompt');
 const safeEval = require('safe-eval');
 const path = require('path');
@@ -54,6 +70,7 @@ const TerminalRenderer = require('marked-terminal').default;
 const prompts = require('prompts');
 const EncryptedJsonDB = require('./helpers/db');
 const Translator = require('./helpers/translator');
+const { locale } = require('yargs');
 
 marked.setOptions({
     // Define custom renderer
@@ -112,7 +129,7 @@ marked.setOptions({
         prefix:'aicode', color:'green'
     });
     //
-    progress.text('*analyzing ...*')
+    progress.text(`*${__('parsing')} ...*`)
     progress.start();
     //x_console.title({ title:'aicode', color:'magenta', titleColor:'white'})
     // -1) determine OS of the user
@@ -126,22 +143,35 @@ marked.setOptions({
         OPENAI_KEY: db_keys_data.OPENAI_KEY,
         GROQ_KEY: db_keys_data.GROQ_KEY
     });
+    // register custom file parsers
     general.registerFileViewer('png',(file)=>'--query me if you need data about this file--');
+    // run the initial analysis
     const initial_analysis = await general.queryLLM('# Analyze the following text and return if its an action or a question, it\'s language and an english version of it:\n'+argv.input,
         z.object({
             type_of: z.enum(['action','question']).describe('Type of the input'),
             english: z.string().describe('English version of text'),
-            //is_action: z.boolean().describe('True if the input is an action, False if the input is a question'),
-            //is_question: z.boolean().describe('True if the input is a question, True if the input is a question'),
             language: z.enum(['English','Spanish','Portuguese','French','Japanese']).describe('language of the given input'),
-            language_code: z.enum(['en','es','pt','fr','ja']).describe('ISO-639 language code of the given input'),
+            //language_code: z.enum(['en','es','pt','fr','ja']).describe('ISO-639 language code of the given input'),
         })
     );
-    if (initial_analysis.data.language) {
+    if (!argv.language && initial_analysis.data.language) {
         argv.language = initial_analysis.data.language;
     }
-    const ui_lang = new Translator('ui',initial_analysis.data.language_code);
-    progress.text(`*analyzing ...* #${initial_analysis.data.english} (${initial_analysis.data.language_code})#`)
+    // get ISO-639 language code from 'language'; to support user defined target language
+    initial_analysis.data.language_code = ISO6391.getCode(argv.language);
+    //
+    const ui_text = new Translator('ui',initial_analysis.data.language_code);
+    const ui_texts = await (async()=>{
+        return {
+            'analyzing':await ui_text.t('analyzing'),
+            'reasoning':await ui_text.t('thinking'),
+            'generating_answer':await ui_text.t('crafting answer'),
+            'using':await ui_text.t('using'),
+            'action':await ui_text.t('action'),
+        };
+    })();
+    //console.log('ui_texts',ui_texts);
+    progress.text(`*${ui_texts['analyzing']} ...* #${initial_analysis.data.english}#`)
     //progress.stop();
     //console.log('initial input analysis?',initial_analysis.data);
     // 1) if the input is an action, select the best action template from the availables and run it
@@ -156,7 +186,7 @@ marked.setOptions({
                 reason: z.string().describe('the reason why the template is the best for the user input'),
             })
         );
-        progress.text(`#reasoning ...# !${action.data.reason}!`)
+        progress.text(`#${ui_texts['reasoning']} ...# !${action.data.reason}!`)
         
         //console.log('action',action.data);
         // declare methods for js code blocks
@@ -195,7 +225,7 @@ marked.setOptions({
             log:(message,data,color='cyan')=>{
                 // extract just the filename from action.data.file (abs)
                 const template_ = action.data.file.split('/').pop().replace('.md','');
-                x_console.out({ prefix:'action:'+template_, color, message, data });
+                x_console.out({ prefix:ui_texts['action']+':'+template_, color, message, data });
             },
             db: {
                 engine: EncryptedJsonDB,
@@ -244,7 +274,7 @@ marked.setOptions({
                 const translation = new Translator('ui',initial_analysis.data.language_code);
                 const translated = await translation.t(text);
                 const template_ = action.data.file.split('/').pop().replace('.md','');
-                x_console.out({ prefix:'action:'+template_, color:'cyan', message:translated });
+                x_console.out({ prefix:ui_texts['action']+':'+template_, color:'cyan', message:translated });
             },
             user_prompt: argv.input,
             english_user_prompt: initial_analysis.data.english,
@@ -261,7 +291,7 @@ marked.setOptions({
             OPENAI_KEY: db_keys_data.OPENAI_KEY,
             GROQ_KEY: db_keys_data.GROQ_KEY
         });
-        progress.text(`?generating answer ...? #using ${action.data.file}#`);
+        progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
         const context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, additional_context)
         progress.stop();
         //

@@ -1,0 +1,8 @@
+{
+  "Usage: $0 <command> [options]": "Usage: $0 <command> [options]",
+  "Process the input": "Process the input",
+  "Run with debug output": "Run with debug output",
+  "Language for the output": "Language for the output",
+  "Input string to process": "Input string to process",
+  "parsing": "parsing"
+}

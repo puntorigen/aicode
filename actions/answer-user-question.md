@@ -1,5 +1,5 @@
 ```description
-Tries to answer the user's question.
+Tries to answer the user's question related to the project
 ```
 
 Project Path: {{ absolute_code_path }}

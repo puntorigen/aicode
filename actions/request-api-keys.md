@@ -1,5 +1,9 @@
 ```description
-Execute this if the user is requesting to configure the API keys
+Execute this if the user is requesting to configure the API keys that are not of the current project
+```
+
+```js:validate
+// return false if the user_prompt is not for this template
 ```
 
 ```js:pre

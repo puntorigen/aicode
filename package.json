@@ -24,15 +24,17 @@
     "@concepto/console": "^1.2.68",
     "@vitalets/google-translate-api": "^9.2.0",
     "code-blocks": "^1.1.0",
-    "code2prompt": "^1.0.88",
+    "code2prompt": "^1.0.891",
     "copy-paste": "^1.5.3",
     "dotenv": "^16.4.5",
     "glob": "^10.3.12",
+    "iso-639-1": "^3.1.2",
     "marked": "^12.0.1",
     "marked-terminal": "^7.0.0",
     "prompts": "^2.4.2",
     "safe-eval": "^0.4.1",
     "screenshot-desktop": "^1.15.0",
+    "y18n": "^5.0.8",
     "yargs": "^17.7.2",
     "zod": "^3.22.4"
   }

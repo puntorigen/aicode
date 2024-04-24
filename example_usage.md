@@ -18,4 +18,9 @@ aicode "count the number of lines of index.js"
 aicode "what's the purpose of codeBlocks.js file?"
 ```
 
+# Or request all configuration keys in any language
+```bash
+aicode "configure all the API keys you need"
+```
+
 # try with other queries or make your own actions!

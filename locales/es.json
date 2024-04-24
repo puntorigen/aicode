@@ -1,0 +1,8 @@
+{
+  "Usage: $0 <command> [options]": "Modo uso: $0 <comando> [opciones]",
+  "Process the input": "Procesar instrucción",
+  "Run with debug output": "Ejecutar en modo depurador",
+  "Language for the output": "Idioma para respuestas",
+  "Input string to process": "Instrucción a procesar",
+  "parsing": "leyendo"
+}
