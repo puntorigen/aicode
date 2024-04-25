@@ -11,7 +11,7 @@ class indexFolder {
     constructor(inputText) {
         this.code_blocks = [];
         this.input = inputText;
-        this.currentFolder = process.cwd();
+        this.currentFolder = __dirname;
     }
 
     async initialize() {
@@ -36,6 +36,7 @@ class indexFolder {
         for (const block of this.code_blocks) {
             prompt += `file:${block.file}\ndescription:\n${block.content}\n\n`;
         }
+        //console.log('action prompt debug:', prompt)
         return prompt;
     }
 }

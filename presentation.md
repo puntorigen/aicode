@@ -1,8 +1,45 @@
-## Bienvenidos a nuestra presentación
+## ¡Bienvenidos a la presentación de AI Code!
 :::{incremental}
-- ¡Bienvenidos a todos!
-- Estamos aquí para discutir AI Code, una herramienta de línea de comandos para el desarrollo de código.
-- Vamos a realizar un recorrido a través de sus características y usos.
+- Un potente software desarrollado por Pablo Schaffner
+- Automatiza tareas tediosas y mejora la productividad en el desarrollo de código
+:::
+->background-color[blue]
+->background[programming,0.3]
+->wait[5000]
+
+---
+
+## Características Principales de AI Code
+:::{incremental}
+- Genera fragmentos de código y estructuras de proyectos basados en comandos de usuario
+- Realiza operaciones basadas en comandos de usuario
+- Soporte para múltiples lenguajes de programación
+- Diseño intuitivo y amigable para los usuarios
+:::
+->background-color[white]
+->background[ai,0.3]
+->wait[3750]
+
+---
+
+## Ejemplos de Uso
+:::{incremental}
+- 'aicode "documentar este proyecto"'
+- 'aicode "documentar este proyecto en japonés"`
+- 'aicode "contar el número de líneas de index.js"`
+- 'aicode "¿cuál es el propósito del archivo codeBlocks.js?"`
+- 'aicode "configurar todas las claves API que necesitas"`
+:::
+->background-color[black]
+->background[programming,0.4]
+->wait[4000]
+
+---
+
+## AI Code: Acepta Comandos en Varios Idiomas
+:::{incremental}
+- Mayor accesibilidad y flexibilidad
+- Expande tus horizontes de programación
 :::
 ->background-color[green]
 ->background[happy people,0.4]
@@ -10,87 +47,46 @@
 
 ---
 
-## Introducción a AI Code
+## Comandos Adicionales de AI Code
 :::{incremental}
-- AI Code es una herramienta de línea de comandos que proporciona apoyo automatizado para el desarrollo de código.
-- Esta herramienta puede generar fragmentos de código, estructuras de proyecto y realizar acciones específicas en base a comandos de entrada del usuario.
-- AI Code también es compatible con múltiples idiomas y se puede personalizar para satisfacer necesidades de desarrollo diversas.
+- Creación de perfiles ('aicode "crear un perfil para user@x.com"')
+- Configuración de claves API ('aicode "configurar todas las claves API"`)
+- ¡Y muchos más!
 :::
 ->background-color[white]
 ->background[programming,0.4]
-->wait[9000]
+->wait[5000]
 
 ---
 
-## Características de AI Code
+## Pablo Schaffner: El Cerebro Detrás de AI Code
 :::{incremental}
-- Generación de Código: Capaz de generar fragmentos de código en múltiples idiomas.
-- Generación de Estructura de Proyecto: Genera estructuras de proyecto inteligentes para diferentes tipos de aplicaciones.
-- Automatización de Tareas: Pueden realizarse acciones específicas a partir de comandos de usuario.
-- Personalizable: Extensibilidad es una característica clave de AI Code.
-- Soporte Multilingüe: AI Code es amigable y soporta múltiples idiomas.
+- Experto en Ingeniería de Software
+- Apasionado por la mejora de la productividad y la automatización de tareas
 :::
 ->background-color[blue]
-->background[ai,0.4]
-->wait[11000]
-
----
-
-## Uso de AI Code
-:::{incremental}
-- AI Code puede ser usado en varios escenarios documentados en el archivo 'example_usage.md'.
-- Generar un archivo README para una carpeta de proyecto simplemente con el comando 'aicode "document this project"'.
-- Contar el número de líneas del archivo 'index.js' con 'aicode "count the number of lines in index.js"'.
-- Hacer una solicitud en un idioma diferente: 'aicode "document this project in japanese"'.
-:::
-->background-color[white]
 ->background[diagrams,0.4]
-->wait[10000]
+->wait[6000]
 
 ---
 
-## Estructura del Proyecto
+## AI Code: Tu Aliado en el Desarrollo de Software
 :::{incremental}
-- El proyecto se compone principalmente de los siguientes directorios y archivos.
-- 'package.json': Contiene metadatos sobre la aplicación y sus dependencias.
-- 'index.js`: Inicializa la interfaz de línea de comandos (CLI), procesa las entradas del usuario e inicia las acciones apropiadas.
-- 'helpers`: Contiene módulos de ayuda, como 'translator.js' para traducir texto, 'db.js' para interactuar con bases de datos, y 'codeBlocks.js' para ejecutar bloques de código de forma segura.
-- 'actions`: Contiene archivos markdown para cada acción posible que AI Code puede realizar. Cada archivo describe una acción y cómo debe ser procesada.
-- 'locales`: Contiene archivos JSON para los diferentes idiomas soportados por AI Code.
+- Reducción de tareas repetitivas
+- Mayor eficiencia y productividad
+- Fácil de usar, flexible y personalizable
 :::
 ->background-color[green]
-->background[github,0.4]
-->wait[11000]
-
----
-
-## Mayor Comprensión Técnica
-:::{incremental}
-- Para una descripción más detallada y una comprensión técnica de cada archivo y su función, consulte los archivos 'my-tutorial-es.md' y `TUTORIAL.md` en el repositorio.
-:::
-->background-color[white]
 ->background[programming,0.4]
-->wait[7000]
+->wait[5000]
 
 ---
 
-## Creador y Mantenimiento
+## ¡Gracias por su Atención!
 :::{incremental}
-- AI Code ha sido creada y es mantenida por Pablo Schaffner.
-- Si encuentras algún error o issue, por favor repórtalo en la página de GitHub del proyecto.
+- ¡Esperamos que disfrutes de la experiencia AI Code!
+- ¡No dudes en probarlo y descubrir cómo puede mejorar tu flujo de desarrollo!
 :::
 ->background-color[blue]
-->background[ai,0.4]
-->wait[8000]
-
----
-
-## Conclusión
-:::{incremental}
-- AI Code es una herramienta versátil y personalizable para el desarrollo de código.
-- Ofrece una amplia gama de características y soporte para múltiples idiomas, lo que la hace accesible y útil para los desarrolladores de todo el mundo.
-- Gracias por asistir a nuestra presentación sobre AI Code. Si tienes alguna pregunta, no dudes en preguntar.
-:::
-->background-color[green]
-->background[peace,0.4]
-->wait[8000]
+->background[happy people,0.4]
+->wait[5000]

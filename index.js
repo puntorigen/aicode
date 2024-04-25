@@ -46,6 +46,7 @@ process.on('SIGINT', () => {
 // Initialize the required variables
 const ISO6391 = require('iso-639-1')
 const code2prompt = require('code2prompt');
+//const code2prompt = require('../code2prompt');
 const safeEval = require('safe-eval');
 const path = require('path');
 const fs = require('fs').promises;
@@ -140,7 +141,7 @@ marked.setOptions({
         path: currentWorkingDirectory,
         template: path.join(actionsDirectory,'default.md'),
         extensions: [],
-        ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+        ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
         OPENAI_KEY: db_keys_data.OPENAI_KEY,
         GROQ_KEY: db_keys_data.GROQ_KEY
     });
@@ -218,7 +219,7 @@ marked.setOptions({
                         path: currentWorkingDirectory,
                         template: path.join(actionsDirectory,template_),
                         extensions: [],
-                        ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.md","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+                        ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.md","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
                         OPENAI_KEY: db_keys_data.OPENAI_KEY,
                         GROQ_KEY: db_keys_data.GROQ_KEY
                     });
@@ -237,6 +238,10 @@ marked.setOptions({
             },
             readFile:async(file)=>{
                 return await fs.readFile(path.join(currentWorkingDirectory,file), 'utf8');
+            },
+            stringifyTreeFromPaths:(paths)=>{
+                const tree = general.stringifyTreeFromPaths(paths);
+                return tree;
             },
             getNpmReadme:async(packageName)=>{
                 // test cache
@@ -338,7 +343,7 @@ marked.setOptions({
                 path: currentWorkingDirectory,
                 template: path.join(actionsDirectory,template_),
                 extensions: [],
-                ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+                ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
                 OPENAI_KEY: db_keys_data.OPENAI_KEY,
                 GROQ_KEY: db_keys_data.GROQ_KEY
             });
@@ -349,7 +354,7 @@ marked.setOptions({
             path: currentWorkingDirectory,
             template: action.data.file,
             extensions: [],
-            ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+            ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
             OPENAI_KEY: db_keys_data.OPENAI_KEY,
             GROQ_KEY: db_keys_data.GROQ_KEY
         });

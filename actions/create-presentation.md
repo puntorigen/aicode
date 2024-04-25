@@ -15,13 +15,21 @@ progress.stop();
 const files_ = await queryLLM('What are the main files we need from the sourcetree to generate a README of this project?\n'+source_tree, 
     z.array(z.string()).describe('filenames to read from the given source tree')
 );
-//log('files_',files_.data);
+log('reading files:',files_.data);
 let files__ = '';
 let filtered = [];
 files = files.map((item)=>{ // original folder files array
     files_.data.some((file)=>{ // filtered files array
         if (item.path.includes(file)){
-            // also truncate the files to 1000 chars
+            // also truncate the files to 1000 chars or what's left of files__ max 5000 words
+            const total_words_sofar = files__.split(' ').length;
+            console.log('words so far:'+total_words_sofar);
+            if (total_words_sofar>5000) {
+                item.code = "-- TRUNCATED --: request for this file if you need it ...";
+                files__ += `${item.path}:\n${item.code}\n\n`;
+                filtered.push(item);
+                return true;
+            }
             item.code = item.code.substring(0, 1000);
             files__ += `${item.path}:\n${item.code}\n\n`;
             filtered.push(item);
@@ -29,6 +37,10 @@ files = files.map((item)=>{ // original folder files array
         }
     });
 });
+// rebuild source_tree using filtered files
+source_tree = stringifyTreeFromPaths(files_.data);
+//console.log('new source_tree',source_tree);
+
 const summary_prompt = await queryLLM(
     `# Project Path: ${absolute_code_path}
 
@@ -51,11 +63,12 @@ Write the content in Markdown format. Use your analysis of the code to generate 
 
 Feel free to infer reasonable details if needed, but try to stick to what can be determined from the codebase itself always avoiding replying there's something missing.
     `, z.object({
-        summary: z.string().describe('the summary of the project')
+        summary: z.string().describe('the summary of the project'),
+        files: z.array(z.string()).describe('array of files for which you need more info if any'),
     })
 );
 const summary_ = summary_prompt.data.summary;
-log('summary_',summary_);
+log('summary_',summary_prompt.data);
 ////
 ////
 let info = {};
