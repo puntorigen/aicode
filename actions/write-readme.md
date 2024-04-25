@@ -76,8 +76,11 @@ Feel free to infer reasonable details if needed, but try to stick to what can be
 // nodejs code to run after getting results (runs within an isolated async function block)
 // context vars: schema (results), absolute_code_path, files, source_tree, etc (all the template vars)
 // save 'readme' schema.readme contents to disk (abs)
-await writeFile(`${absolute_code_path}/README.md`, schema.readme);
-log('README.md saved!');
+// ai=true when running this code block from AI, false when manually running it
+if (ai) {
+    await writeFile(`${absolute_code_path}/README.md`, schema.readme);
+    log('README.md saved!');
+}
 // if you return an object here, it will be available for the next code block
 ```
 

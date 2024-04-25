@@ -69,6 +69,7 @@ const { readFile } = require('fs');
 const TerminalRenderer = require('marked-terminal').default;
 const prompts = require('prompts');
 const EncryptedJsonDB = require('./helpers/db');
+const CacheWithTTL = require('./helpers/CacheWithTTL');
 const Translator = require('./helpers/translator');
 const { locale } = require('yargs');
 
@@ -149,7 +150,7 @@ marked.setOptions({
     const initial_analysis = await general.queryLLM('# Analyze the following text and return if its an action or a question, it\'s language and an english version of it:\n'+argv.input,
         z.object({
             type_of: z.enum(['action','question']).describe('Type of the input'),
-            english: z.string().describe('English version of text'),
+            english: z.string().describe('English version of text, without translating filenames'),
             language: z.enum(['English','Spanish','Portuguese','French','Japanese']).describe('language of the given input'),
             //language_code: z.enum(['en','es','pt','fr','ja']).describe('ISO-639 language code of the given input'),
         })
@@ -186,8 +187,13 @@ marked.setOptions({
                 reason: z.string().describe('the reason why the template is the best for the user input'),
             })
         );
+        progress.stop();
+        console.log('action',action.data);
         progress.text(`#${ui_texts['reasoning']} ...# !${action.data.reason}!`)
-        
+        // if action.data.file contains 'file:', remove it
+        if (action.data.file.startsWith('file:')) {
+            action.data.file = action.data.file.replace('file:','');
+        }
         //console.log('action',action.data);
         // declare methods for js code blocks
         let additional_context = { 
@@ -199,19 +205,32 @@ marked.setOptions({
             },
             queryTemplate:async(template,question=null,custom_context={})=>{
                 // add .md to 'template' if it doesn't have extension
-                const template_ = template.endsWith('.md') ? template : `${template}.md`;
-                const specific = new code2prompt({
-                    path: currentWorkingDirectory,
-                    template: path.join(actionsDirectory,template_),
-                    extensions: [],
-                    ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-                    OPENAI_KEY: db_keys_data.OPENAI_KEY,
-                    GROQ_KEY: db_keys_data.GROQ_KEY
-                });
-                return await specific.request(question,null,{
-                    //custom_context,
-                    meta: false
-                });
+                // test cachekey: template+question+currentWorkingDirectory
+                const cache = new CacheWithTTL('template_cache.json');
+                const cacheKey = template+question+currentWorkingDirectory;
+                const cachedTemplate = cache.get(cacheKey);
+                if (cachedTemplate) {
+                    return cachedTemplate;
+                }
+                try {
+                    const template_ = template.endsWith('.md') ? template : `${template}.md`;
+                    const specific = new code2prompt({
+                        path: currentWorkingDirectory,
+                        template: path.join(actionsDirectory,template_),
+                        extensions: [],
+                        ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.md","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+                        OPENAI_KEY: db_keys_data.OPENAI_KEY,
+                        GROQ_KEY: db_keys_data.GROQ_KEY
+                    });
+                    const resp_ = await specific.request(question,null,{
+                        //custom_context,
+                        meta: false
+                    });
+                    cache.set(cacheKey, resp_, 1 * 60 * 60 * 1000); // 1 hour
+                    return resp_;
+                } catch(err) {
+                    x_console.out({ prefix:'aicode', color:'brightRed', message:'Error running template: '+err.message });
+                }
             },
             writeFile:async(file,content)=>{
                 return await fs.writeFile(file,content, 'utf8');
@@ -219,12 +238,41 @@ marked.setOptions({
             readFile:async(file)=>{
                 return await fs.readFile(path.join(currentWorkingDirectory,file), 'utf8');
             },
+            getNpmReadme:async(packageName)=>{
+                // test cache
+                const cache = new CacheWithTTL('npm_readme_cache.json');
+                const cachedReadme = cache.get(packageName);
+                if (cachedReadme) {
+                    return cachedReadme;
+                }
+                const fetch = (await import('node-fetch')).default;
+                const url = `https://registry.npmjs.org/${packageName}`;
+                try {
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok.');
+                    }
+                    const data = await response.json();
+                    const readme = data.readme;
+                    if (readme) {
+                        //console.log('README Content:\n', readme);
+                        cache.set(packageName, readme, 24 * 60 * 60 * 1000); // 24 hours
+                        return readme;
+                    } else {
+                        throw new Error('README not available for this package.');
+                    }
+                } catch (error) {
+                    console.error('Failed to fetch README:', error.message);
+                    return null;
+                }
+            },
             renderMD:(text)=>{
                 return marked.parse(text);
             },
             log:(message,data,color='cyan')=>{
                 // extract just the filename from action.data.file (abs)
                 const template_ = action.data.file.split('/').pop().replace('.md','');
+                progress.stop();
                 x_console.out({ prefix:ui_texts['action']+':'+template_, color, message, data });
             },
             db: {
@@ -282,6 +330,20 @@ marked.setOptions({
             language:initial_analysis.data.language,
             language_code:initial_analysis.data.language_code,
         };
+        // some special methods that need access to the context
+        additional_context.runTemplate = async(template,question=null,custom_context={})=>{
+            // add .md to 'template' if it doesn't have extension
+            const template_ = template.endsWith('.md') ? template : `${template}.md`;
+            const specific = new code2prompt({
+                path: currentWorkingDirectory,
+                template: path.join(actionsDirectory,template_),
+                extensions: [],
+                ignore: ["**/node_modules/**","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+                OPENAI_KEY: db_keys_data.OPENAI_KEY,
+                GROQ_KEY: db_keys_data.GROQ_KEY
+            });
+            return await specific.runTemplate(question,null,{...additional_context,...custom_context,...{ai:false}});
+        };
         // render the template using code2prompt
         const actioncode = new code2prompt({
             path: currentWorkingDirectory,
@@ -292,7 +354,7 @@ marked.setOptions({
             GROQ_KEY: db_keys_data.GROQ_KEY
         });
         progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
-        const context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, additional_context)
+        const context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});
         progress.stop();
         //
     }
