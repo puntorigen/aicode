@@ -23,7 +23,7 @@ files = files.map((item)=>{ // original folder files array
         if (item.path.includes(file)){
             // also truncate the files to 1000 chars or what's left of files__ max 5000 words
             const total_words_sofar = files__.split(' ').length;
-            console.log('words so far:'+total_words_sofar);
+            //console.log('words so far:'+total_words_sofar);
             if (total_words_sofar>5000) {
                 item.code = "-- TRUNCATED --: request for this file if you need it ...";
                 files__ += `${item.path}:\n${item.code}\n\n`;
@@ -64,7 +64,7 @@ Write the content in Markdown format. Use your analysis of the code to generate 
 Feel free to infer reasonable details if needed, but try to stick to what can be determined from the codebase itself always avoiding replying there's something missing.
     `, z.object({
         summary: z.string().describe('the summary of the project'),
-        files: z.array(z.string()).describe('array of files for which you need more info if any'),
+        //need_more_info_of_files: z.array(z.string()).describe('array of files for which you need more contents, if any'),
     })
 );
 const summary_ = summary_prompt.data.summary;
@@ -147,16 +147,32 @@ ${slideContent.replace('`',"'")}
 :::
 ->background-color[${slide.background_color}]
 ->background[${slide.background_image_keyword},0.4]
-->wait[${time_}]
+->wait[${Math.round(time_)}]
 ${index < array.length - 1 ? '\n---\n' : ''}`; // Add '---' if it's not the last item
 });
 log('info',info)
 // save markdown to tmp disk
-await writeFile('presentation.md',info.revelo.join('\n'));
 // if action=create and save_file is not empty, render to disk
+// save to disk if needed (if ext not .mp4 or .gif, save revelo string to file)
+if (info.action=='create') {
+    if (info.save_file!='' && (info.save_file.includes('.mp4') || info.save_file.includes('.gif'))) {
+        // render to desired file
+        await writeFile('presentation.md',info.revelo.join('\n'));
+        log('issuing bash command: '+`npx revelo render presentation.md -o ${info.save_file}`);
+        const output = await executeBash({},`npx revelo render presentation.md -o ${info.save_file}`);
+        log('bash output',output);
+        //await executeScript(`npx revelo render presentation.md -o ${info.save_file}`);
+    } else if (info.save_file!='' && (info.save_file.includes('.md') || info.save_file.includes('.txt'))) {
+        await writeFile(info.save_file,info.revelo.join('\n'));
+    } else {
+        await writeFile('presentation.md',info.revelo.join('\n'));
+    }
+} else if (info.action=='show') {
+    await writeFile('presentation.md',info.revelo.join('\n'));
+    await executeBash({},`npx revelo server presentation.md --auto-play`);
+}
 // if action=show, serve the generated file (npx revelo server)
 // launch respective bash action
-// save to disk if needed (if ext not .mp4 or .gif, save revelo string to file)
 return {
     info
 }

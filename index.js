@@ -133,18 +133,25 @@ marked.setOptions({
     //
     progress.text(`*${__('parsing')} ...*`)
     progress.start();
+    // Define default configuration for the code2prompt instances
+    const codePrompt = (template,config={}) => {
+        return new code2prompt({
+            path: currentWorkingDirectory,
+            template, //: path.join(actionsDirectory,'default.md'),
+            extensions: [],
+            ignore: ["**/node_modules/**","**/*.gguf","**/*.pyc","**/*.js.*","**/*.css.*","**/*.chunk.*","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
+            OPENAI_KEY: db_keys_data.OPENAI_KEY,
+            GROQ_KEY: db_keys_data.GROQ_KEY,
+            ANTHROPIC_KEY: db_keys_data.ANTHROPIC_KEY,
+            maxBytesPerFile: 16384,
+            ...config
+        });
+    }
     //x_console.title({ title:'aicode', color:'magenta', titleColor:'white'})
     // -1) determine OS of the user
     const userOS = os.platform();
     // 0) determine if the input is an action or a question, and the user input language
-    const general = new code2prompt({
-        path: currentWorkingDirectory,
-        template: path.join(actionsDirectory,'default.md'),
-        extensions: [],
-        ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-        OPENAI_KEY: db_keys_data.OPENAI_KEY,
-        GROQ_KEY: db_keys_data.GROQ_KEY
-    });
+    const general = codePrompt(path.join(actionsDirectory,'default.md'));
     // register custom file parsers
     general.registerFileViewer('png',(file)=>'--query me if you need data about this file--');
     // run the initial analysis
@@ -158,6 +165,11 @@ marked.setOptions({
     );
     if (!argv.language && initial_analysis.data.language) {
         argv.language = initial_analysis.data.language;
+    }
+    // if argv.language length is 2, it's an ISO-639 language code
+    if (argv.language && argv.language.length == 2) {
+        // get language name from ISO-639 language code
+        argv.language = ISO6391.getName(argv.language);
     }
     // get ISO-639 language code from 'language'; to support user defined target language
     initial_analysis.data.language_code = ISO6391.getCode(argv.language);
@@ -215,14 +227,7 @@ marked.setOptions({
                 }
                 try {
                     const template_ = template.endsWith('.md') ? template : `${template}.md`;
-                    const specific = new code2prompt({
-                        path: currentWorkingDirectory,
-                        template: path.join(actionsDirectory,template_),
-                        extensions: [],
-                        ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.md","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-                        OPENAI_KEY: db_keys_data.OPENAI_KEY,
-                        GROQ_KEY: db_keys_data.GROQ_KEY
-                    });
+                    const specific = codePrompt(path.join(actionsDirectory,template_));
                     const resp_ = await specific.request(question,null,{
                         //custom_context,
                         meta: false
@@ -332,32 +337,22 @@ marked.setOptions({
             user_prompt: argv.input,
             english_user_prompt: initial_analysis.data.english,
             argv,userOS,progress,
-            language:initial_analysis.data.language,
+            language:argv.language,
             language_code:initial_analysis.data.language_code,
         };
         // some special methods that need access to the context
         additional_context.runTemplate = async(template,question=null,custom_context={})=>{
             // add .md to 'template' if it doesn't have extension
             const template_ = template.endsWith('.md') ? template : `${template}.md`;
-            const specific = new code2prompt({
-                path: currentWorkingDirectory,
-                template: path.join(actionsDirectory,template_),
-                extensions: [],
-                ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-                OPENAI_KEY: db_keys_data.OPENAI_KEY,
-                GROQ_KEY: db_keys_data.GROQ_KEY
-            });
+            const specific = codePrompt(path.join(actionsDirectory,template_));
             return await specific.runTemplate(question,null,{...additional_context,...custom_context,...{ai:false}});
         };
+        additional_context.executeBash = async(code,custom_context={}) => {
+            const exec = await general.executeBash({...additional_context,...custom_context},code);
+            return exec;
+        };
         // render the template using code2prompt
-        const actioncode = new code2prompt({
-            path: currentWorkingDirectory,
-            template: action.data.file,
-            extensions: [],
-            ignore: ["**/node_modules/**","**/*.gguf","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-            OPENAI_KEY: db_keys_data.OPENAI_KEY,
-            GROQ_KEY: db_keys_data.GROQ_KEY
-        });
+        const actioncode = codePrompt(action.data.file);
         progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
         const context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});
         progress.stop();
