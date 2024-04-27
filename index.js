@@ -85,7 +85,7 @@ marked.setOptions({
     const db_keys = new EncryptedJsonDB('keys.json');
     let db_keys_data = db_keys.load();
     let key_providers = Object.keys(db_keys_data);
-    if (key_providers.length==0) {
+    if (true) {
         // only ask any supported API, if there are no API providers set yet
         // OPENAI
         if (!process.env.OPENAI_KEY && !db_keys_data.OPENAI_KEY) {
@@ -117,8 +117,23 @@ marked.setOptions({
             // save GROQ_KEY env into db_keys
             db_keys_data.GROQ_KEY = process.env.GROQ_KEY;
         }
+        // ANTHROPIC
+        if (!process.env.ANTHROPIC_KEY && !db_keys_data.ANTHROPIC_KEY) {
+            // prompt for ANTHROPIC_KEY
+            db_keys_data.ANTHROPIC_KEY = (
+                await prompts({
+                    type: 'text',
+                    name: 'value',
+                    message: x_console.colorize('Enter your ANTHROPIC API key (or empty if none):')
+                })
+            ).value;
+
+        } else if (process.env.ANTHROPIC_KEY && !db_keys_data.ANTHROPIC_KEY) {
+            // save ANTHROPIC_KEY env into db_keys
+            db_keys_data.ANTHROPIC_KEY = process.env.ANTHROPIC_KEY;
+        }
         // we need at least 1 key
-        if (db_keys_data.GROQ_KEY.trim() == '' && db_keys_data.OPENAI_KEY.trim() == '') {
+        if (db_keys_data.GROQ_KEY.trim() == '' && db_keys_data.OPENAI_KEY.trim() == '' && db_keys_data.ANTHROPIC_KEY.trim() == '') {
             x_console.out({ prefix:'aicode', color:'brightRed', message:'You need to set at least one API key to continue. Quitting.' });
             process.exit(1);
         }
@@ -143,7 +158,7 @@ marked.setOptions({
             OPENAI_KEY: db_keys_data.OPENAI_KEY,
             GROQ_KEY: db_keys_data.GROQ_KEY,
             ANTHROPIC_KEY: db_keys_data.ANTHROPIC_KEY,
-            maxBytesPerFile: 16384,
+            maxBytesPerFile: (db_keys_data.ANTHROPIC_KEY!='')?32768:16384,
             ...config
         });
     }
@@ -163,6 +178,7 @@ marked.setOptions({
             //language_code: z.enum(['en','es','pt','fr','ja']).describe('ISO-639 language code of the given input'),
         })
     );
+    const input_lang_code = ISO6391.getCode(initial_analysis.data.language);
     if (!argv.language && initial_analysis.data.language) {
         argv.language = initial_analysis.data.language;
     }
@@ -174,7 +190,7 @@ marked.setOptions({
     // get ISO-639 language code from 'language'; to support user defined target language
     initial_analysis.data.language_code = ISO6391.getCode(argv.language);
     //
-    const ui_text = new Translator('ui',initial_analysis.data.language_code);
+    const ui_text = new Translator('ui',input_lang_code);
     const ui_texts = await (async()=>{
         return {
             'analyzing':await ui_text.t('analyzing'),
@@ -200,8 +216,10 @@ marked.setOptions({
                 reason: z.string().describe('the reason why the template is the best for the user input'),
             })
         );
-        progress.stop();
-        console.log('action',action.data);
+        //progress.stop();
+        //console.log('action',action.data);
+        const template_ = action.data.file.split('/').pop().replace('.md','');
+        const translate = new Translator(template_,initial_analysis.data.language_code);
         progress.text(`#${ui_texts['reasoning']} ...# !${action.data.reason}!`)
         // if action.data.file contains 'file:', remove it
         if (action.data.file.startsWith('file:')) {
@@ -239,7 +257,9 @@ marked.setOptions({
                 }
             },
             writeFile:async(file,content)=>{
-                return await fs.writeFile(file,content, 'utf8');
+                const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+                await fs.writeFile(file,content, 'utf8');
+                await sleep(500);
             },
             readFile:async(file)=>{
                 return await fs.readFile(path.join(currentWorkingDirectory,file), 'utf8');
@@ -247,6 +267,23 @@ marked.setOptions({
             stringifyTreeFromPaths:(paths)=>{
                 const tree = general.stringifyTreeFromPaths(paths);
                 return tree;
+            },
+            userDirectory:currentWorkingDirectory,
+            tmp: async(ext='tmp')=>{
+                const tmp = require('tmp');
+                const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+                const tmpobj = tmp.fileSync({
+                    postfix: '.'+ext
+                });
+                await sleep(100);
+                return {
+                    file: tmpobj.name,
+                    fd: tmpobj.fd,
+                    remove: tmpobj.removeCallback
+                }
+            },
+            sleep:async(ms)=>{
+                return new Promise(resolve => setTimeout(resolve, ms));
             },
             getNpmReadme:async(packageName)=>{
                 // test cache
@@ -283,7 +320,7 @@ marked.setOptions({
                 // extract just the filename from action.data.file (abs)
                 const template_ = action.data.file.split('/').pop().replace('.md','');
                 progress.stop();
-                x_console.out({ prefix:ui_texts['action']+':'+template_, color, message, data });
+                x_console.out({ prefix:ui_texts['action']+':'+template_, color, message:x_console.colorize(message), data });
             },
             db: {
                 engine: EncryptedJsonDB,
@@ -316,6 +353,11 @@ marked.setOptions({
                     }
                 }
             },
+            t: async(text)=>{
+                // translate text to the user specified language
+                const translated = await translate.t(text);
+                return translated;
+            },
             ask: async(question)=>{
                 // ask the user a question in the input language
                 const translation = new Translator('ui',initial_analysis.data.language_code);
@@ -347,8 +389,16 @@ marked.setOptions({
             const specific = codePrompt(path.join(actionsDirectory,template_));
             return await specific.runTemplate(question,null,{...additional_context,...custom_context,...{ai:false}});
         };
-        additional_context.executeBash = async(code,custom_context={}) => {
-            const exec = await general.executeBash({...additional_context,...custom_context},code);
+        additional_context.executeBash = async(code) => {
+            try {
+                const exec = await general.executeBash({...additional_context},code);
+                return exec;
+            } catch(err) {
+                return false;
+            }
+        };
+        additional_context.spawnBash = async(custom_context={},code) => {
+            const exec = await general.spawnBash({...additional_context,...custom_context},code);
             return exec;
         };
         // render the template using code2prompt

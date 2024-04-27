@@ -10,12 +10,27 @@ Creates a presentation using revelo npm. Posible example requests:
 
 ```js:pre
 // read npm revelo pkg for readme context
-progress.stop();
+//progress.stop();
+const texts = {
+    "analizing sourcetree": await t('analyzing folder'),
+    "understanding files": await t('understanding files'),
+    "generating summary": await t('generating summary'),
+    "generating slides": await t('generating slides'),
+    "analyzing input": await t('analyzing input'),
+    "determining presentation topic": await t('determining presentation topic'),
+    "writing slides": await t('writing slides'),
+    "generating presentation": await t('generating presentation'),
+    "rendering presentation": await t('rendering presentation'),
+    "opening presentation": await t('opening presentation'),
+    "opening presentation on browser": await t('opening presentation on browser'),
+};
+progress.text(`*${texts['analizing sourcetree']} ...*`);
 //// generate summary
 const files_ = await queryLLM('What are the main files we need from the sourcetree to generate a README of this project?\n'+source_tree, 
     z.array(z.string()).describe('filenames to read from the given source tree')
 );
-log('reading files:',files_.data);
+progress.text(`*${texts['understanding files']} ...*`);
+//log('reading files:',files_.data);
 let files__ = '';
 let filtered = [];
 files = files.map((item)=>{ // original folder files array
@@ -41,6 +56,7 @@ files = files.map((item)=>{ // original folder files array
 source_tree = stringifyTreeFromPaths(files_.data);
 //console.log('new source_tree',source_tree);
 
+progress.text(`*${texts['generating summary']} ...*`);
 const summary_prompt = await queryLLM(
     `# Project Path: ${absolute_code_path}
 
@@ -68,11 +84,13 @@ Feel free to infer reasonable details if needed, but try to stick to what can be
     })
 );
 const summary_ = summary_prompt.data.summary;
-log('summary_',summary_prompt.data);
+//log('summary_',summary_prompt.data);
 ////
 ////
 let info = {};
-const revelo_readme = await getNpmReadme('revelo');
+
+//const revelo_readme = await getNpmReadme('revelo');
+progress.text(`*${texts['analyzing input']} ...*`);
 const initial_analysis = await queryLLM(
     `# Act as an expert text analyst.
 
@@ -109,6 +127,7 @@ info.summary = summary_;
 // estimate the number of slides needed for the presentation
 // create a presentation with the slides as an array of objects
 let slides = [];
+progress.text(`*${texts['determining presentation topic']} ...*`);
 info.topic = (await queryLLM(
     `# Act as an expert text analyst. Determine the main topic for the following text:
     ${info.summary}
@@ -116,6 +135,9 @@ info.topic = (await queryLLM(
         topic: z.enum(["software engineering","documentation","real state","finance","marketing"]).describe('the main topic of the text')
     })
 )).data.topic;
+progress.text(`*${texts['determining presentation topic']} ...* #${info.topic}#`);
+await sleep(1000);
+progress.text(`*${texts['writing slides']} ...*`);
 const create_ = await queryLLM(
     `# Act as an experienced writer, expert in ${info.topic} and at creating impactful and ${info.tone} presentations.
 
@@ -137,47 +159,57 @@ const create_ = await queryLLM(
     })
 );
 info.created = create_.data.slides;
+progress.text(`*${texts['generating presentation']} ...*`);
 // create revelo markdown from the slides
 info.revelo = info.created.map((slide, index, array) => {
-    const slideContent = slide.content.map((item) => `- ${item.replace('`',"'")}`).join('\n');
-    const time_ = (slide.amount_of_time==0) ? 1500 : slide.amount_of_time/slide.content.length;
-return `## ${slide.title.replace('`',"'")}
-:::{incremental}
-${slideContent.replace('`',"'")}
-:::
+    let slideContent = slide.content.map((item) => `- ${item.replace(/`/g, "'")}`).join('\n');
+    let time_ = 1500;
+    if (info.action=='create') {
+        // when rendering to file, we should not using incremental steps (because it's not supported)
+        time_ = (slide.amount_of_time==0) ? 1500 : slide.amount_of_time;
+    } else {
+        time_ = (slide.amount_of_time==0) ? (1500/slide.content.length) : slide.amount_of_time/slide.content.length;
+    }
+    if (info.action!='create') {
+        // wrap slideContent with :::{incremental} x :::
+        slideContent = `:::{incremental}\n${slideContent}\n:::`;
+    }
+return `## ${slide.title.replace(/`/g, "'")}
+${slideContent.replace(/`/g, "'")}
 ->background-color[${slide.background_color}]
-->background[${slide.background_image_keyword},0.4]
+->background[${slide.background_image_keyword},0.3]
 ->wait[${Math.round(time_)}]
-${index < array.length - 1 ? '\n---\n' : ''}`; // Add '---' if it's not the last item
+${index < array.length - 1 ? '---' : ''}`; // Add '---' if it's not the last item
 });
-log('info',info)
-// save markdown to tmp disk
-// if action=create and save_file is not empty, render to disk
-// save to disk if needed (if ext not .mp4 or .gif, save revelo string to file)
+//log('info',info)
+const tmpfile = {
+    file: 'presentation.md',
+}
 if (info.action=='create') {
-    if (info.save_file!='' && (info.save_file.includes('.mp4') || info.save_file.includes('.gif'))) {
-        // render to desired file
-        await writeFile('presentation.md',info.revelo.join('\n'));
-        log('issuing bash command: '+`npx revelo render presentation.md -o ${info.save_file}`);
-        const output = await executeBash({},`npx revelo render presentation.md -o ${info.save_file}`);
-        log('bash output',output);
-        //await executeScript(`npx revelo render presentation.md -o ${info.save_file}`);
+    if (info.save_file!='' && info.save_file.includes('.mp4')) {
+        // render to MP4 file
+        await writeFile(tmpfile.file,info.revelo.join('\n'));
+        progress.text(`*${texts['rendering presentation']} ...*`);
+        //log('issuing bash command: '+`npx revelo render ${tmpfile.file} -t 3 -o ${info.save_file}`);
+        const output = await executeBash(`npx revelo render ${tmpfile.file} -t 3 -o ${info.save_file}`);
+        //log('bash (create) output',output);
     } else if (info.save_file!='' && (info.save_file.includes('.md') || info.save_file.includes('.txt'))) {
+        log((await t(`Revelo presentation markdown file saved to `))+info.save_file);
         await writeFile(info.save_file,info.revelo.join('\n'));
     } else {
-        await writeFile('presentation.md',info.revelo.join('\n'));
+        log((await t(`Revelo presentation markdown file saved to `))+tmpfile.file);
+        await writeFile(tmpfile.file,info.revelo.join('\n'));
     }
 } else if (info.action=='show') {
-    await writeFile('presentation.md',info.revelo.join('\n'));
-    await executeBash({},`npx revelo server presentation.md --auto-play`);
+    //progress.text(`*${texts['opening presentation']} ...*`);
+    await writeFile(tmpfile.file,info.revelo.join('\n'));
+    const text = await t('Server starting with presentation; press *CTRL+C* to stop server.');
+    log(text);
+    const output = await executeBash(`npx revelo server ${tmpfile.file} --auto-play`);
+    //log('bash (show) output',output);
 }
-// if action=show, serve the generated file (npx revelo server)
-// launch respective bash action
+log('debug info',info)
 return {
     info
 }
-```
-
-```bash
-# render
 ```
