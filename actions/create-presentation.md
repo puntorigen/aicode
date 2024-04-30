@@ -11,6 +11,7 @@ Creates a presentation using revelo npm. Posible example requests:
 ```js:pre
 // read npm revelo pkg for readme context
 //progress.stop();
+await setModelPreferences(["OPENAI","ANTHROPIC","GROQ"]);
 const texts = {
     "analizing sourcetree": await t('analyzing folder'),
     "understanding files": await t('understanding files'),
@@ -41,12 +42,12 @@ files = files.map((item)=>{ // original folder files array
             //console.log('words so far:'+total_words_sofar);
             if (total_words_sofar>5000) {
                 item.code = "-- TRUNCATED --: request for this file if you need it ...";
-                files__ += `${item.path}:\n${item.code}\n\n`;
+                files__ += `### ${item.path}:\n"${item.code}"\n\n`;
                 filtered.push(item);
                 return true;
             }
             item.code = item.code.substring(0, 1000);
-            files__ += `${item.path}:\n${item.code}\n\n`;
+            files__ += `### ${item.path}:\n"${item.code}"\n\n`;
             filtered.push(item);
             return true;
         }

@@ -4,6 +4,7 @@ const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const actionsIndex = require('./actions');
 const getSystemLocale = require('./helpers/lang')();
+const output_redirected = !process.stdout.isTTY;
 //console.log('getSystemLocale',getSystemLocale);
 
 const __ = require('y18n')({
@@ -42,6 +43,11 @@ process.on('SIGINT', () => {
     // Perform any cleanup, if necessary
     process.exit(0); // Exit normally
 });
+
+if (output_redirected) {
+    // disable debugger if output is redirected
+    argv.debug = false;
+}
 
 // Initialize the required variables
 const ISO6391 = require('iso-639-1')
@@ -229,7 +235,14 @@ marked.setOptions({
         // declare methods for js code blocks
         let additional_context = { 
             queryLLM:async(question,schema)=>{
-                return await general.queryLLM(question,schema); 
+                try {
+                    return await general.queryLLM(question,schema); 
+                } catch(err) {
+                    if (argv.debug) {
+                        x_console.out({ prefix:'aicode', color:'brightRed', message:'Error running queryLLM: '+err.message, data:{question} });
+                    }
+                    return false;
+                }
             },
             queryContext:async(question,schema)=>{
                 return await general.request(question,schema); 
@@ -255,6 +268,52 @@ marked.setOptions({
                 } catch(err) {
                     x_console.out({ prefix:'aicode', color:'brightRed', message:'Error running template: '+err.message });
                 }
+            },
+            setModelPreferences:async(order_models)=>{
+                general.setModelPreferences(order_models);
+                // ask model API keys if they don't exit and we need them
+                if (!db_keys_data.OPENAI_KEY && general.model_preferences.includes('OPENAI')) {
+                    // prompt for OPENAI_KEY
+                    db_keys_data.OPENAI_KEY = (
+                        await prompts({
+                            type: 'text',
+                            name: 'value',
+                            message: x_console.colorize('Enter your *OPENAI API key* (or empty if none):')
+                        })
+                    ).value;
+                    if (db_keys_data.OPENAI_KEY.trim()!='') {
+                        db_keys.save(db_keys_data);
+                        general.setLLMAPI('OPENAI',db_keys_data.OPENAI_KEY);
+                    }
+                } else if (!db_keys_data.GROQ_KEY && general.model_preferences.includes('GROQ')) {
+                    // prompt for GROQ_KEY
+                    db_keys_data.GROQ_KEY = (
+                        await prompts({
+                            type: 'text',
+                            name: 'value',
+                            message: x_console.colorize('Enter your *GROQ API key* (or empty if none):')
+                        })
+                    ).value;
+                    if (db_keys_data.GROQ_KEY.trim()!='') {
+                        db_keys.save(db_keys_data);
+                        general.setLLMAPI('GROQ',db_keys_data.GROQ_KEY);
+                    }
+                } else if (!db_keys_data.ANTHROPIC_KEY && general.model_preferences.includes('ANTHROPIC')) {
+                    // prompt for ANTHROPIC_KEY
+                    db_keys_data.ANTHROPIC_KEY = (
+                        await prompts({
+                            type: 'text',
+                            name: 'value',
+                            message: x_console.colorize('Enter your *ANTHROPIC API key* (or empty if none):')
+                        })
+                    ).value;
+                    if (db_keys_data.ANTHROPIC_KEY.trim()!='') {
+                        db_keys.save(db_keys_data);
+                        general.setLLMAPI('ANTHROPIC',db_keys_data.ANTHROPIC_KEY);
+                    }
+                }
+                //
+                return true;
             },
             writeFile:async(file,content)=>{
                 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -318,9 +377,11 @@ marked.setOptions({
             },
             log:(message,data,color='cyan')=>{
                 // extract just the filename from action.data.file (abs)
-                const template_ = action.data.file.split('/').pop().replace('.md','');
-                progress.stop();
-                x_console.out({ prefix:ui_texts['action']+':'+template_, color, message:x_console.colorize(message), data });
+                if (argv.debug) {
+                    const template_ = action.data.file.split('/').pop().replace('.md','');
+                    progress.stop();
+                    x_console.out({ prefix:ui_texts['action']+':'+template_, color, message:x_console.colorize(message), data });
+                }
             },
             db: {
                 engine: EncryptedJsonDB,
@@ -392,6 +453,14 @@ marked.setOptions({
         additional_context.executeBash = async(code) => {
             try {
                 const exec = await general.executeBash({...additional_context},code);
+                return exec;
+            } catch(err) {
+                return false;
+            }
+        };
+        additional_context.executeNode = async(code) => {
+            try {
+                const exec = await general.executeNode({...additional_context},code);
                 return exec;
             } catch(err) {
                 return false;

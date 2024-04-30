@@ -8,9 +8,8 @@ Source Tree:
 
 {{#each files}}
 {{#if code}}
-`{{path}}`:
-
-{{{code}}}
+### {{path}}:
+"{{{code}}}"
 
 {{/if}}
 {{/each}}
