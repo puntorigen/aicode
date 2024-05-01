@@ -80,7 +80,7 @@ const EncryptedJsonDB = require('./helpers/db');
 const CacheWithTTL = require('./helpers/CacheWithTTL');
 const Translator = require('./helpers/translator');
 const { locale } = require('yargs');
-const debug = (argv.debug) ? (x,data)=>x_console.out({ prefix:'[debug]', message:x, data }) : ()=>{};
+const debug = (argv.debug) ? (x,data)=>x_console.out({ prefix:'debug', message:x, data }) : ()=>{};
 
 marked.setOptions({
     // Define custom renderer
