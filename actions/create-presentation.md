@@ -25,9 +25,17 @@ const texts = {
     "opening presentation": await t('opening presentation'),
     "opening presentation on browser": await t('opening presentation on browser'),
 };
-progress.text(`*${texts['analizing sourcetree']} ...*`);
+progress.text(`*${texts['analizing folder']} ...*`);
+//// determine the type of folder contents
+const analysis_ = await queryLLM('Considering the following source tree of a user folder, determine the category for the folder:\n'+source_tree, 
+    z.object({
+        kind_of_files: z.enum(["source code","documentation","images","videos","other"]).describe('the kind of files to read from the given source tree')
+    })
+);
+debug('analysis_',analysis_.data);
+progress.text(`*${texts['understanding files']} ...*`);
 //// generate summary
-const files_ = await queryLLM('What are the main files we need from the sourcetree to generate a README of this project?\n'+source_tree, 
+const files_ = await queryLLM('What are the main files we need from the following sourcetree to generate a summary for this folder:\n'+source_tree, 
     z.array(z.string()).describe('filenames to read from the given source tree')
 );
 progress.text(`*${texts['understanding files']} ...*`);
@@ -57,19 +65,15 @@ files = files.map((item)=>{ // original folder files array
 source_tree = stringifyTreeFromPaths(files_.data);
 //console.log('new source_tree',source_tree);
 
-progress.text(`*${texts['generating summary']} ...*`);
-const summary_prompt = await queryLLM(
-    `# Project Path: ${absolute_code_path}
-
-Act as an expert in code analysis and documentation and generate a high-quality markdown README file for this project or folder. 
-Analyze the following files in detail to first understand their purpose, functionality and contents, if it's a CLI, library, class, program or documentation, then check if there're usage examples within the code or other files, and use that information to generate your response. 
-
-Source Tree:
-${source_tree}
-
-${files__}
-
-The README should include the following sections:
+progress.text(`*${texts['generating summary']} for ${analysis_.data.kind_of_files}...*`);
+// generate a summary of the project files depending on 'analysis_.data.kind_of_files' value
+let instruction_prompt_1 = ``;
+let instruction_prompt_2 = ``;
+switch (analysis_.data.kind_of_files) {
+    case 'source code':
+        instruction_prompt_1 = `Act as an expert in code analysis and documentation and generate a high-quality markdown README file for this project or folder. 
+Analyze the following files in detail to first understand their purpose, functionality and contents, if it's a CLI, library, class, program or documentation, then check if there're usage examples within the code or other files, and use that information to generate your response.`;
+        instruction_prompt_2 = `The README should include the following sections:
 
 1. Project Title
 2. Brief description (1-2 sentences)
@@ -78,9 +82,47 @@ The README should include the following sections:
 
 Write the content in Markdown format. Use your analysis of the code to generate accurate and helpful content, but also explain things clearly for users who may not be familiar with the implementation details.
 
-Feel free to infer reasonable details if needed, but try to stick to what can be determined from the codebase itself always avoiding replying there's something missing.
+Feel free to infer reasonable details if needed, but try to stick to what can be determined from the codebase itself always avoiding replying there's something missing.`;
+        break;
+    case 'documentation':
+        instruction_prompt_1 = `Act as an expert reader and writer of documents of different topics, read the following documents and generate a high-quality markdown summary for each of the files in this folder. 
+Analyze the files in detail to first understand their topic, audience, caracteristics, context and contents, if they are tutorials, manuals, presentations, stories, dialogs, scripts or whatever, read them thoroughly, and use that information to generate your response.`;
+        instruction_prompt_2 = `The summary should include the following sections:
+
+1. General topic title for grouping all documents
+2. Brief description (2-3 sentences)
+3. What are each of the files about
+4. A general overview of the whole contents
+5. Conclusion
+
+Write the content in Markdown format. Use your analysis of the contents to generate accurate and helpful content suitable for a presentation about the contents, but also explain things clearly for users who may not be familiar with the details.
+
+Feel free to infer reasonable details if needed, but try to stick to what can be determined from the contents given always avoiding replying there's something missing.`;
+        break;
+    case 'images':
+        instruction_prompt_1 = ``
+        break;
+    case 'videos':
+        instruction_prompt_1 = ``
+        break;
+    case 'other':
+        instruction_prompt_1 = ``
+        break;
+}
+
+const summary_prompt = await queryLLM(
+    `# Project Path: ${absolute_code_path}
+
+${instruction_prompt_1}
+
+Source Tree:
+${source_tree}
+
+${files__}
+
+${instruction_prompt_2}
     `, z.object({
-        summary: z.string().describe('the summary of the project'),
+        summary: z.string().describe('the summary of the folder'),
         //need_more_info_of_files: z.array(z.string()).describe('array of files for which you need more contents, if any'),
     })
 );
@@ -106,7 +148,7 @@ const initial_analysis = await queryLLM(
     `, 
     z.object({
         action: z.enum(["create","show","save"]).describe('action to take'),
-        presentation_type: z.enum(["business","tutorial","marketing"]).describe('the type of presentation to create'),
+        presentation_type: z.enum(["business","tutorial","marketing","documentation","finance"]).describe('the type of presentation to create'),
         save_file: z.string().describe('the file name to create, if any or empty'),
         source_file: z.string().describe('the exact referenced filename in the user request on the source_tree, if any or empty'),
         slides: z.number().optional().describe('the number of slides to create if any or zero'),
@@ -155,7 +197,7 @@ const create_ = await queryLLM(
             content: z.array(z.string()).describe('the content bullet points of the slide, you may use emoji\'s'),
             background_color: z.enum(["white","green","blue","black","magenta"]).describe('the background color of the slide'),
             amount_of_time: z.number().describe('the amount of time in ms for showing the slide'),
-            background_image_keyword: z.enum(["neutral","happy people","nature","forrest","github","ai","programming","diagrams","peace","sky"]).describe('the keywords for a supporting background image, like: happy people, nature, business, ocean, etc.'),
+            background_image_keyword: z.enum(["neutral","happy people","nature","forrest","github","ai","programming","diagrams","peace","sky","charts","stats","excel","insurance"]).describe('the keywords for a supporting background image, like: happy people, nature, business, ocean, etc.'),
         })).describe('the slides to create')
     })
 );
@@ -209,7 +251,7 @@ if (info.action=='create') {
     const output = await executeBash(`npx revelo server ${tmpfile.file} --auto-play`);
     //log('bash (show) output',output);
 }
-log('debug info',info)
+debug('debug info',info)
 return {
     info
 }

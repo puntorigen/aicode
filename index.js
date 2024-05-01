@@ -386,9 +386,15 @@ marked.setOptions({
             },
             log:(message,data,color='cyan')=>{
                 // extract just the filename from action.data.file (abs)
+                progress.stop();
+                const template_ = action.data.file.split('/').pop().replace('.md','');
+                x_console.out({ prefix:ui_texts['action']+':'+template_, color, message:x_console.colorize(message), data });
+            },
+            debug:(message,data,color='green')=>{
+                // extract just the filename from action.data.file (abs)
                 if (argv.debug) {
-                    const template_ = action.data.file.split('/').pop().replace('.md','');
                     progress.stop();
+                    const template_ = action.data.file.split('/').pop().replace('.md','');
                     x_console.out({ prefix:ui_texts['action']+':'+template_, color, message:x_console.colorize(message), data });
                 }
             },
