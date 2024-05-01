@@ -174,6 +174,12 @@ marked.setOptions({
                     const content = await docx_parser.read();
                     debug('reading .docx: '+file,content);
                     return content;
+                },
+                '.xlsx': async(file)=>{
+                    const xlsx_parser = new parsers.xlsx(file);
+                    const content = await xlsx_parser.read();
+                    debug('reading .xlsx: '+file,content);
+                    return content;
                 }
             },
             ...config
