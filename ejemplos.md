@@ -16,6 +16,8 @@ aicode "creame un perfil de usuario para pablo@x.com"
 
 aicode "usa de contexto la carpeta que tengo abierta en mi escritorio, y dime que documentos hablan de inmobiliarias"
 
+aicode "convierte este projecto a typescript"
+
 #opens the user camera, takes a picture and compares it to a previous picture to determine if the user has changed (osascript, history per template db)
 aicode "como me veo hoy"
 

@@ -4,6 +4,7 @@ const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const actionsIndex = require('./actions');
 const getSystemLocale = require('./helpers/lang')();
+const parsers = require('./parsers');
 const output_redirected = !process.stdout.isTTY;
 //console.log('getSystemLocale',getSystemLocale);
 
@@ -51,8 +52,8 @@ if (output_redirected) {
 
 // Initialize the required variables
 const ISO6391 = require('iso-639-1')
-const code2prompt = require('code2prompt');
-//const code2prompt = require('../code2prompt');
+//const code2prompt = require('code2prompt');
+const code2prompt = require('../code2prompt');
 const safeEval = require('safe-eval');
 const path = require('path');
 const fs = require('fs').promises;
@@ -79,6 +80,7 @@ const EncryptedJsonDB = require('./helpers/db');
 const CacheWithTTL = require('./helpers/CacheWithTTL');
 const Translator = require('./helpers/translator');
 const { locale } = require('yargs');
+const debug = (argv.debug) ? (x,data)=>x_console.out({ prefix:'[debug]', message:x, data }) : ()=>{};
 
 marked.setOptions({
     // Define custom renderer
@@ -165,6 +167,15 @@ marked.setOptions({
             GROQ_KEY: db_keys_data.GROQ_KEY,
             ANTHROPIC_KEY: db_keys_data.ANTHROPIC_KEY,
             maxBytesPerFile: (db_keys_data.ANTHROPIC_KEY!='')?32768:16384,
+            custom_viewers: {
+                // register custom file parsers
+                '.docx': async(file)=>{
+                    const docx_parser = new parsers.docx(file);
+                    const content = await docx_parser.read();
+                    debug('reading .docx: '+file,content);
+                    return content;
+                }
+            },
             ...config
         });
     }
@@ -173,8 +184,6 @@ marked.setOptions({
     const userOS = os.platform();
     // 0) determine if the input is an action or a question, and the user input language
     const general = codePrompt(path.join(actionsDirectory,'default.md'));
-    // register custom file parsers
-    general.registerFileViewer('png',(file)=>'--query me if you need data about this file--');
     // run the initial analysis
     const initial_analysis = await general.queryLLM('# Analyze the following text and return if its an action or a question, it\'s language and an english version of it:\n'+argv.input,
         z.object({

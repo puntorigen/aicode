@@ -5,7 +5,7 @@ class Reader {
         this.file = file;
     }
 
-    read() {
+    async read() {
         return `Reading ${this.ext} file: ${this.file}`;
     }
 }
