@@ -22,6 +22,7 @@
   },
   "homepage": "https://github.com/puntorigen/aicode#readme",
   "dependencies": {
+    "@bacali/rtf-parser": "^1.0.1",
     "@concepto/console": "^1.2.68",
     "@vitalets/google-translate-api": "^9.2.0",
     "code-blocks": "^1.1.0",

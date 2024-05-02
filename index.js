@@ -194,6 +194,12 @@ marked.setOptions({
                     const content = await pdf_parser.read();
                     debug('reading .pdf: '+file,content);
                     return content;
+                },
+                '.rtf': async(file)=>{
+                    const rtf_parser = new parsers.rtf(file);
+                    const content = await rtf_parser.read();
+                    debug('reading .rtf: '+file,content);
+                    return content;
                 }
             },
             debugger: argv.debug,
