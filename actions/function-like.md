@@ -1,5 +1,5 @@
 ```description
-Generates a nodejs script for answering the request of the user. Specialy useful for things like 'how many lines of code does this project have?' or "what's the time complexity of the functions on [file]", etc.
+Generates a nodejs script for answering the request of the user about a specific file. Specialy useful for things like 'how many lines of code does the file xx.js have?' or "what's the time complexity of the functions on yy.ts", etc. MUST contain a specific file with extension to be valid, if no extension is provided, don't choose this template.
 ```
 
 ```js:pre
@@ -19,9 +19,12 @@ const file = await queryLLM(
         file: z.string().describe('the file name'),
     })
 );
+if (!file.data) {
+    return false; // for parent to choose another template
+}
 // read the file and return it as context for the next code block
 log('file', file.data);
-if (file.data.file!='') {
+if (file.data && file.data.file!='') {
     const input_without_file = await queryLLM(
         `The following a user's text request. I need you to extract the action that the user is requesting without trying to reply it and without mentioning any file names: ${english_user_prompt}`
     );
@@ -29,7 +32,7 @@ if (file.data.file!='') {
     const write_function = await queryLLM(
         `act as an expert software engineer, expert in nodeJS. Consider the following custom methods are available to you, and you don't have access to 'require':
         async readFile(file_from_sourcetree)-> returns a string
-        async writeFile(filename, content)
+        async writeFile(filename, content) -> writes a file to disk (try not to use it)
 
         # generate and return the contents for a valid nodejs async function named 'runme' code block that "${input_without_file.data}"" and return it. Name the function 'runme' that accepts a filename and write it as a const assignment. Double check the function's code and be sure it runs flawlessly on the first run performing the user requested action:\n`, z.object({
             //function_name: z.string().describe('the nodejs function name'),
@@ -39,11 +42,7 @@ if (file.data.file!='') {
     )    
     log('write_function', write_function);
     //const test = await executeScript(`log('HELLO FROM DYNAMIC SCRIPT on TEMPLATE')`);
-    const test2_code = `!(async () => {
-        ${write_function.data.code}
-        return await runme('${file.data.file}');
-    })();
-    `;
+    const test2_code = write_function.data.code + `\nawait runme('${file.data.file}');`;
     const test2 = await executeNode(test2_code);
     log('test2_code', test2_code);
     log('test2_result', test2);

@@ -41,6 +41,10 @@ let argv = yargs(hideBin(process.argv))
 // trap exit signals
 process.on('SIGINT', () => {
     console.log('CTRL+C detected. Exiting gracefully...');
+    // erase tmp files
+    for (const [key, value] of Object.entries(tmpFiles)) {
+        value.removeCallback();
+    }
     // Perform any cleanup, if necessary
     process.exit(0); // Exit normally
 });
@@ -81,6 +85,8 @@ const CacheWithTTL = require('./helpers/CacheWithTTL');
 const Translator = require('./helpers/translator');
 const { locale } = require('yargs');
 const debug = (argv.debug) ? (x,data)=>x_console.out({ prefix:'debug', message:x, data }) : ()=>{};
+const tmp = require('tmp');
+let tmpFiles = {}; // track tmp files, to remove them on finish or ctrl-c
 
 marked.setOptions({
     // Define custom renderer
@@ -238,7 +244,7 @@ marked.setOptions({
             })
         );
         //progress.stop();
-        //console.log('action',action.data);
+        debug('action',action.data);
         const template_ = action.data.file.split('/').pop().replace('.md','');
         const translate = new Translator(template_,initial_analysis.data.language_code);
         progress.text(`#${ui_texts['reasoning']} ...# !${action.data.reason}!`)
@@ -344,11 +350,11 @@ marked.setOptions({
             },
             userDirectory:currentWorkingDirectory,
             tmp: async(ext='tmp')=>{
-                const tmp = require('tmp');
                 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 const tmpobj = tmp.fileSync({
                     postfix: '.'+ext
                 });
+                tmpFiles[tmpobj.name] = tmpobj;
                 await sleep(100);
                 return {
                     file: tmpobj.name,
@@ -495,6 +501,7 @@ marked.setOptions({
         const actioncode = codePrompt(action.data.file);
         progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
         const context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});
+        debug('context_',context_);
         progress.stop();
         //
     }
