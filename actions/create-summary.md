@@ -20,6 +20,11 @@ Source Tree:
 {{/if}}
 {{/each}}
 
+{{#if personality}}
+Use the following writting rules:
+{{personality}}
+{{/if}}
+
 ```json:schema
 {
     "summary": "summary text for the project"

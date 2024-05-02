@@ -3,9 +3,11 @@
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
 const actionsIndex = require('./actions');
+const personalitiesIndex = require('./personalities');
 const getSystemLocale = require('./helpers/lang')();
 const parsers = require('./parsers');
 const output_redirected = !process.stdout.isTTY;
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 //console.log('getSystemLocale',getSystemLocale);
 
 const __ = require('y18n')({
@@ -229,7 +231,7 @@ marked.setOptions({
         return {
             'analyzing':await ui_text.t('analyzing'),
             'reasoning':await ui_text.t('thinking'),
-            'generating_answer':await ui_text.t('crafting answer'),
+            'generating_answer':await ui_text.t('answering'),
             'using':await ui_text.t('using'),
             'action':await ui_text.t('action'),
         };
@@ -244,17 +246,36 @@ marked.setOptions({
         const user_action = new actionsIndex(argv.input);
         const prompt = await user_action.getPrompt();
         // which action template should we use ?
+        progress.text(`#${ui_texts['reasoning']} ...#`)
         const action = await general.queryLLM(prompt,
             z.object({
                 file: z.string().describe('just the absolute choosen template file'),
                 reason: z.string().describe('the reason why the template is the best for the user input'),
             })
         );
-        //progress.stop();
-        debug('action',action.data);
         const template_ = action.data.file.split('/').pop().replace('.md','');
-        const translate = new Translator(template_,initial_analysis.data.language_code);
+        // choose a personality profile
+        const personality = new personalitiesIndex(argv.input);
+        const personality_prompt = await personality.getPrompt();
         progress.text(`#${ui_texts['reasoning']} ...# !${action.data.reason}!`)
+        const persona = await general.queryLLM(personality_prompt,
+            z.object({
+                file: z.string().describe('just the absolute choosen template file'),
+                reason: z.string().describe('the reason why the template is the best for the user input'),
+            })
+        );
+        if (persona.data.file.startsWith('file:')) {
+            persona.data.file = persona.data.file.replace('file:','');
+        }
+        const persona_ = await personality.getPersonality(persona.data.file);
+        //progress.stop();
+        //debug('action',action.data);
+        //debug('personality',persona_);
+        const translate = new Translator(template_,initial_analysis.data.language_code);
+        const personality__ = await translate.t('personality');
+        progress.text(`#${ui_texts['reasoning']} ...# ${personality__}: !${persona.data.reason}!`)
+        //await sleep(2500);
+
         // if action.data.file contains 'file:', remove it
         if (action.data.file.startsWith('file:')) {
             action.data.file = action.data.file.replace('file:','');
@@ -262,6 +283,7 @@ marked.setOptions({
         //console.log('action',action.data);
         // declare methods for js code blocks
         let additional_context = { 
+            personality:persona_,
             queryLLM:async(question,schema)=>{
                 try {
                     return await general.queryLLM(question,schema); 
@@ -344,7 +366,6 @@ marked.setOptions({
                 return true;
             },
             writeFile:async(file,content)=>{
-                const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 await fs.writeFile(file,content, 'utf8');
                 await sleep(500);
             },
@@ -357,7 +378,6 @@ marked.setOptions({
             },
             userDirectory:currentWorkingDirectory,
             tmp: async(ext='tmp')=>{
-                const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 const tmpobj = tmp.fileSync({
                     postfix: '.'+ext
                 });
@@ -369,9 +389,7 @@ marked.setOptions({
                     remove: tmpobj.removeCallback
                 }
             },
-            sleep:async(ms)=>{
-                return new Promise(resolve => setTimeout(resolve, ms));
-            },
+            sleep,
             getNpmReadme:async(packageName)=>{
                 // test cache
                 const cache = new CacheWithTTL('npm_readme_cache.json');
