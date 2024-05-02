@@ -56,8 +56,8 @@ if (output_redirected) {
 
 // Initialize the required variables
 const ISO6391 = require('iso-639-1')
-//const code2prompt = require('code2prompt');
-const code2prompt = require('../code2prompt');
+const code2prompt = require('code2prompt');
+//const code2prompt = require('../code2prompt');
 const safeEval = require('safe-eval');
 const path = require('path');
 const fs = require('fs').promises;
@@ -188,6 +188,7 @@ marked.setOptions({
                     return content;
                 }
             },
+            debugger: argv.debug,
             ...config
         });
     }
@@ -500,8 +501,8 @@ marked.setOptions({
         // render the template using code2prompt
         const actioncode = codePrompt(action.data.file);
         progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
-        const context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});
-        debug('context_',context_);
+        let context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});
+        debug('context_.abort_',context_.abort_);
         progress.stop();
         //
     }

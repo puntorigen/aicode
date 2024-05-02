@@ -1,4 +1,4 @@
 module.exports = {
     docx: require('./docx'),
-    xlsx: require('./xlsx'),
+    xlsx: require('./xlsx2'),
 };

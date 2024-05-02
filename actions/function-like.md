@@ -20,7 +20,7 @@ const file = await queryLLM(
     })
 );
 if (!file.data) {
-    return false; // for parent to choose another template
+    return { abort_:true }; // for parent to choose another template
 }
 // read the file and return it as context for the next code block
 log('file', file.data);
