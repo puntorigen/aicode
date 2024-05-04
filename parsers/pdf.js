@@ -11,8 +11,15 @@ class PDF extends Reader {
 
     async read() {
         try {
+            // silence pdf-parse warnings
+            const originalConsoleLog = console.log; 
+            console.log = () => {};
+            // Read the PDF file and parse its contents
             const dataBuffer = await fs.readFile(this.file);
             const data = await pdfParse(dataBuffer);
+            // restore console.log
+            console.log = originalConsoleLog;
+            // Extract the metadata and text content
             const metadataMarkdown = await this.extractMetadataAsMarkdown(data.metadata);
             const textMarkdown = this.convertToMarkdown(data.text);
             return `${metadataMarkdown}\n\n${textMarkdown}`;

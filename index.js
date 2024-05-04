@@ -58,8 +58,8 @@ if (output_redirected) {
 
 // Initialize the required variables
 const ISO6391 = require('iso-639-1')
-const code2prompt = require('code2prompt');
-//const code2prompt = require('../code2prompt');
+//const code2prompt = require('code2prompt');
+const code2prompt = require('../code2prompt');
 const safeEval = require('safe-eval');
 const path = require('path');
 const fs = require('fs').promises;
@@ -432,6 +432,7 @@ marked.setOptions({
                 progress.stop();
                 const template_ = action.data.file.split('/').pop().replace('.md','');
                 x_console.out({ prefix:ui_texts['action']+':'+template_, color, message:x_console.colorize(message), data });
+                progress.start();
             },
             debug:(message,data,color='green')=>{
                 // extract just the filename from action.data.file (abs)
@@ -479,6 +480,7 @@ marked.setOptions({
             },
             ask: async(question)=>{
                 // ask the user a question in the input language
+                progress.stop();
                 const translation = new Translator('ui',initial_analysis.data.language_code);
                 const translated = await translation.t(question);
                 const response = await prompts({
@@ -486,6 +488,25 @@ marked.setOptions({
                     name: 'value',
                     message: translated
                 });
+                progress.start();
+                return response.value;
+            },
+            select: async(question,choices)=>{
+                // ask the user to choose from a list of choices in the input language using prompts
+                progress.stop();
+                const translation = new Translator('ui',initial_analysis.data.language_code);
+                const translated = await translation.t(question);
+                // translate the given choices
+                for (let i=0; i<choices.length; i++) {
+                    choices[i].title = await translation.t(choices[i].title);
+                }
+                const response = await prompts({
+                    type: 'select',
+                    name: 'value',
+                    message: translated,
+                    choices
+                });
+                progress.start();
                 return response.value;
             },
             answer: async(text)=>{
@@ -497,7 +518,7 @@ marked.setOptions({
             },
             user_prompt: argv.input,
             english_user_prompt: initial_analysis.data.english,
-            argv,userOS,progress,
+            argv,system_os:userOS,progress,
             language:argv.language,
             language_code:initial_analysis.data.language_code,
         };
