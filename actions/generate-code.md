@@ -40,7 +40,8 @@ files = files.map((item)=>{
         }
     });
 });
-const original_source_tree = source_tree;
+const original_source_tree = source_tree; // TODO truncate if too long
+// idea: filter the source_tree to exclude files within .gitignore if defined (do it on code2prompt)
 source_tree = stringifyTreeFromPaths(files_.data);
 
 // understand the user task given the sources, and return a thinking plan for the source code generation
