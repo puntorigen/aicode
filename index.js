@@ -148,6 +148,21 @@ marked.setOptions({
             // save ANTHROPIC_KEY env into db_keys
             db_keys_data.ANTHROPIC_KEY = process.env.ANTHROPIC_KEY;
         }
+        // OPENAI
+        if (!process.env.REPLICATE_API_TOKEN && !db_keys_data.REPLICATE_API_TOKEN) {
+            // prompt for REPLICATE_API_TOKEN
+            db_keys_data.REPLICATE_API_TOKEN = (
+                await prompts({
+                    type: 'text',
+                    name: 'value',
+                    message: x_console.colorize('Enter your REPLICATE API TOKEN (or empty if none):')
+                })
+            ).value;
+
+        } else if (process.env.REPLICATE_API_TOKEN && !db_keys_data.REPLICATE_API_TOKEN) {
+            // save REPLICATE_API_TOKEN env into db_keys
+            db_keys_data.REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+        }
         // we need at least 1 key
         if (db_keys_data.GROQ_KEY.trim() == '' && db_keys_data.OPENAI_KEY.trim() == '' && db_keys_data.ANTHROPIC_KEY.trim() == '') {
             x_console.out({ prefix:'aicode', color:'brightRed', message:'You need to set at least one API key to continue. Quitting.' });
@@ -205,6 +220,167 @@ marked.setOptions({
             debugger: argv.debug,
             ...config
         });
+    }
+    // init replicate if key is set
+    let replicate = null, replicate_models = {};
+    if (db_keys_data.REPLICATE_API_TOKEN) {
+        const replicate_ = require('replicate');
+        replicate = new replicate_({ auth: db_keys_data.REPLICATE_API_TOKEN });
+        replicate_models = {
+            'create-image': async(data)=>{
+                // cost: 333 images per 1 usd; https://replicate.com/black-forest-labs/flux-schnell
+                const props = {
+                    prompt: '',
+                    aspect_ratio: '1:1', // values: 1:1, 16:9, 21:9, 2:3, 3:2, 4:5, 5:4, 9:16, 9:21
+                    output_format: 'jpg',
+                    output_quality: 100,
+                    num_outputs: 1,
+                    ...data
+                };
+                const response = await replicate.run(
+                    "black-forest-labs/flux-schnell",
+                    {
+                        input: props
+                    }
+                );
+                return {
+                    output: response.output, //jpg
+                    error: response.error,
+                    raw: response
+                };
+            },
+            'create-avatar': async(data)=>{
+                const props = {
+                    // define defaults first, and overwrite with data
+                    age: 22,
+                    race: 'american',
+                    gender: 'male',
+                    hair: 'black',
+                    eyes: 'blue',
+                    background: 'green',
+                    shirt: 'blue',
+                    ...data
+                }
+                const prompt = `A complete and realistic neutral face of a ${props.age} years old ${props.race} ${props.gender} facing the camera, that shows the full ${props.hair}-short hair, clean face without hair, with a ${props.shirt} formal shirt, ${props.eyes} eyes and a ${props.background} flat background. Hyper realistic.`;
+                const response = await replicate.run(
+                    "black-forest-labs/flux-schnell",
+                    {
+                        input: {
+                            num_outputs: 1,
+                            aspect_ratio: "1:1",
+                            output_format: "jpg",
+                            output_quality: 100,
+                            prompt: prompt
+                        }
+                    }
+                );
+                return {
+                    output: response.output, //jpg
+                    error: response.error,
+                    raw: response
+                };
+            },
+            'photomaker': async(data)=>{
+                // Create photos, paintings and avatars for anyone in any style within seconds.
+                // cost: 52 images per 1 usd; https://replicate.com/tencentarc/photomaker
+                const props = {
+                    prompt: '', // describe the new pose or situation you want to create
+                    input_image: '', // url of image to use as source
+                    num_outputs: 1,
+                    num_steps: 50,
+                    style_name: 'Photographic (Default)',
+                    guidance_scale: 5,
+                    style_strength_ratio: 20,
+                    negative_prompt: 'nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry',
+                    ...data
+                };
+                if (data.image) props.input_image = data.image;
+                const response = await replicate.run(
+                    "tencentarc/photomaker:ddfc2b08d209f9fa8c1eca692712918bd449f695dabb4a958da31802a9570fe4",
+                    {
+                        input: props
+                    }
+                );
+                return {
+                    output: response.output, //png
+                    error: response.error,
+                    raw: response
+                };
+            },
+            'image-to-text': async(data)=>{
+                // cost, 344 runs per 1 usd; https://replicate.com/smoretalk/clip-interrogator-turbo
+                // data min: { image, prompt }
+                const props = {
+                    mode: "fast", // turbo, fast, best
+                    image: "", // url to process
+                    style_only: false,
+                    ...data
+                };
+                if (!data) return { specs:props, output_format:'txt' };
+                const response = await replicate.run(
+                    "smoretalk/clip-interrogator-turbo:f66767bbd5c60b841e05dfb72a176d11bf36eca0554c6ea5d6d705cf617bafe8",
+                    {
+                        input: props
+                    }
+                );
+                return {
+                    output: response.output, //text
+                    error: response.error,
+                    raw: response
+                };
+            },
+            'image-to-video': async(data)=>{
+                // cost, 5 videos per 1 usd; https://replicate.com/ali-vilab/i2vgen-xl
+                // data min: { image, prompt }
+                const props = {
+                    image: '',
+                    prompt: '',
+                    max_frames: 16,
+                    guidance_scale: 9,
+                    num_inference_steps: 50,
+                    ...data
+                };
+                if (!data) return { specs:props, output_format:'mp4' };
+                const response = await replicate.run(
+                    "ali-vilab/i2vgen-xl:5821a338d00033abaaba89080a17eb8783d9a17ed710a6b4246a18e0900ccad4",
+                    {
+                        input: props
+                    }
+                );
+                return {
+                    output: response.output, //mp4
+                    error: response.error,
+                    raw: response
+                };
+            },
+            'text-to-speech': async(data)=>{
+                // cost, 142 runs per 1 usd; https://replicate.com/lucataco/xtts-v2
+                // data min: { text, language, speaker }
+                const props = {
+                    // define defaults first, and overwrite with data
+                    text: 'Hola, ¿cómo estás?',
+                    language: 'es',
+                    speaker: 'https://replicate.delivery/pbxt/Jt79w0xsT64R1JsiJ0LQRL8UcWspg5J4RFrU6YwEKpOT1ukS/male.wav',
+                    ...data
+                }
+                if (!data) return { specs:props, output_format:'wav', specs_values:{
+                    text: 'text',
+                    language: ['es','en','fr','de','it','pt','pl','tr','ru','nl','cs','ar','zh','hu','ko','hi'],
+                    speaker: ['url_wav','url_mp3','url_m4a','url_ogg','url_flv']
+                } };
+                const response = await replicate.run(
+                    "lucataco/xtts-v2:684bc3855b37866c0c65add2ff39c78f3dea3f4ff103a436465326e0f438d55e",
+                    {
+                        input: props
+                    }
+                );
+                return {
+                    output: response.output, //wav
+                    error: response.error,
+                    raw: response
+                };
+            }
+        };
     }
     //x_console.title({ title:'aicode', color:'magenta', titleColor:'white'})
     // -1) determine OS of the user
@@ -290,6 +466,7 @@ marked.setOptions({
         // declare methods for js code blocks
         let additional_context = { 
             personality:persona_,
+            replicate_models, 
             queryLLM:async(question,schema)=>{
                 try {
                     return await general.queryLLM(question,schema); 
@@ -457,6 +634,7 @@ marked.setOptions({
             },
             modules: {
                 screenshot: require('screenshot-desktop'),
+                diagram: require('cli-diagram'),
                 clipboard: {
                     paste: async()=>{
                         const clipboard = require("copy-paste");
@@ -474,9 +652,13 @@ marked.setOptions({
                 }
             },
             t: async(text)=>{
-                // translate text to the user specified language
-                const translated = await translate.t(text);
-                return translated;
+                // try to translate text to the user specified language (using google)
+                try {
+                    const translated = await translate.t(text);
+                    return translated;
+                } catch(err) {
+                    return text;
+                }
             },
             ask: async(question)=>{
                 // ask the user a question in the input language
@@ -542,7 +724,7 @@ marked.setOptions({
                 const exec = await general.executeNode({...additional_context},code);
                 return exec;
             } catch(err) {
-                return false;
+                return { error:err };
             }
         };
         additional_context.spawnBash = async(custom_context={},code) => {
@@ -552,9 +734,14 @@ marked.setOptions({
         // render the template using code2prompt
         const actioncode = codePrompt(action.data.file);
         progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
-        let context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});
-        debug('context_.abort_',context_.abort_);
-        progress.stop();
+        try {
+            let context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});
+            debug('context_.abort_',context_.abort_);
+            progress.stop();
+        } catch(ErrA) {
+            progress.stop();
+            x_console.out({ prefix:'aicode', color:'brightRed', message:'Error running template: '+ErrA.message, data:ErrA });
+        }
         //
     }
     if (argv.debug) {
