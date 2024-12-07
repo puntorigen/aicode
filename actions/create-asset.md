@@ -16,11 +16,12 @@ const analysis_ = await queryLLM(analysis_prompt,
             width: z.number().describe('the asset resolution width'),
             height: z.number().describe('the asset resolution height'),
         }).describe('the asset resolution'),
+        filename: z.string().describe('the output filename with extension'),
         output_format: z.enum(["jpg","png","mp4","none"]).describe('the asset output format'),
-        cleaned_topic: z.string().describe("cleaned topic request")
+        cleaned_topic: z.string().describe("cleaned topic request in english")
     })
 );
-log('analysis_',analysis_.data);
+debug('analysis_',analysis_.data);
 // 1.5. check if we can determine the output filename and location from prompt, and also using the sourcetree we have.
 progress.text(`*Determining output filename and best location ...*`);
 const file_prompt = `# given the following user task:
@@ -32,7 +33,9 @@ ${JSON.stringify(analysis_.data)}
 # and the following source tree:
 ${source_tree}
 
-# can you determine the output filename (with extension) and location for this new asset? Use the naming conventions from the source tree if possible.
+# can you determine the best output filename (with extension) and location for this new asset? Use the naming conventions from the source tree if possible.
+
+# if the user didn't specify a location reference for the file, use the current folder as the default location.
 `;
 const file_ = await queryLLM(file_prompt, 
     z.object({
@@ -40,51 +43,30 @@ const file_ = await queryLLM(file_prompt,
         location: z.string().describe('the output location within the source tree')
     })
 );
-log('file_',file_.data);
-// 2. check if the cleaned_topic is related somehow to some file within the source_tree or not
-const related_prompt = `# given the following task:
-"${analysis_.data.cleaned_topic}"
-# check if it is related to one or more files from the following source tree:
-${source_tree}
-# return which files should we read to perform the requested task, or none if there's no need.
-`;
-const related_ = await queryLLM(related_prompt, 
-    z.array(z.string()).describe('filenames to read from the given source tree')
-);
-log('related_',related_.data);
-// 3. find a suitable output filename and best location for it within the source_tree
-let filtered = [];
-if (related_.data && related_.data.length>0) {
-    progress.text(`*Reading related files ...*`);
-    //log('reading files:',files_.data);
-    let files__ = '';
-    files = files.map((item)=>{ // original folder files array
-        related_.data.some((file)=>{ // filtered files array
-            if (item.path.includes(file)){
-                // also truncate the files to 1000 chars or what's left of files__ max 5000 words
-                const total_words_sofar = files__.split(' ').length;
-                //console.log('words so far:'+total_words_sofar);
-                if (total_words_sofar>5000) {
-                    item.code = "-- TRUNCATED --: request for this file if you need it ...";
-                    files__ += `### ${item.path}:\n"${item.code}"\n\n`;
-                    filtered.push(item);
-                    return true;
-                }
-                item.code = item.code.substring(0, 1000);
-                files__ += `### ${item.path}:\n"${item.code}"\n\n`;
-                filtered.push(item);
-                return true;
-            }
-        });
-    });
-    // rebuild source_tree using filtered files
-    source_tree = stringifyTreeFromPaths(related_.data);
-    log('new source_tree and files',{ source_tree,filtered })
+
+progress.text(`*Generating image ...*`);
+// generate an image; TODO add support for video
+let image = await replicate_models['create-image']({
+    prompt: analysis_.data.cleaned_topic,
+});
+if (image.raw.length==0) {
+    // TODO handle error retrying with a different approach
+    throw new Error('Failed to generate image');
+} else {
+    // download image, scale it to the required resolution, and save it to the output location
+    // outputdir: location + filename Path join
+    debug('image',image.raw[0]);
+    const output_ = joinPaths(file_.data.location,file_.data.filename)
+    debug('saving as:',output_);
+    await downloadFile(image.raw[0], output_);
+    log(`Image saved as: ${output_}`, '', 'green');
+    //progress.text(`*Filed save as: ${output_} ...*`);
 }
+
 
 return {
     specs: analysis_.data,
-    related_files: filtered,
+    //related_files: filtered,
     source_tree
 }
 // 4. generate image using Flux

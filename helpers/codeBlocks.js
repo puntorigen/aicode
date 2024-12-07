@@ -59,6 +59,11 @@ class codeBlocks {
     async executeBash(context={},code=null) {
         console.log('TODO executeBash');
     }
+
+    async executePython(context={},code=null) {
+        // use pythonia and a wrapped async function
+        console.log('TODO executePython');
+    }
 }
 
 module.exports = codeBlocks;

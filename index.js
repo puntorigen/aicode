@@ -619,6 +619,10 @@ marked.setOptions({
                     x_console.out({ prefix:ui_texts['action']+':'+template_, color, message:x_console.colorize(message), data });
                 }
             },
+            joinPaths: (...paths)=>{
+                const path_ = require('path');
+                return path_.join(...paths);
+            },
             db: {
                 engine: EncryptedJsonDB,
                 save: (file,data)=>{
@@ -704,7 +708,7 @@ marked.setOptions({
             language:argv.language,
             language_code:initial_analysis.data.language_code,
         };
-        // some special methods that need access to the context
+        // some special methods that need access to the previous context methods
         additional_context.runTemplate = async(template,question=null,custom_context={})=>{
             // add .md to 'template' if it doesn't have extension
             const template_ = template.endsWith('.md') ? template : `${template}.md`;
@@ -731,6 +735,44 @@ marked.setOptions({
             const exec = await general.spawnBash({...additional_context,...custom_context},code);
             return exec;
         };
+        // additional special context methods
+        additional_context.downloadFile = async (url, output) => {
+            const fetch = (await import('node-fetch')).default;
+            const fs = require('fs');
+            const path = require('path');
+
+            // Resolve the output path relative to the currentWorkingDirectory
+            const resolved_path = path.isAbsolute(output)
+                ? output
+                : path.resolve(currentWorkingDirectory, output);
+
+            // Ensure the directory exists
+            const directory = path.dirname(resolved_path);
+            fs.mkdirSync(directory, { recursive: true });
+
+            try {
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    debug(`Failed to fetch the file. Status: ${response.status}`);
+                    return null;
+                }
+
+                // Pipe the response data to the specified file
+                const file_stream = fs.createWriteStream(resolved_path);
+                await new Promise((resolve, reject) => {
+                    response.body.pipe(file_stream);
+                    response.body.on("error", reject);
+                    file_stream.on("finish", resolve);
+                });
+
+                debug(`File downloaded successfully to: ${resolved_path}`);
+                return resolved_path; // Return the absolute path of the saved file
+            } catch (error) {
+                debug(`Error downloading file from ${url}:`, error.message);
+                return null;
+            }
+        }; 
         // render the template using code2prompt
         const actioncode = codePrompt(action.data.file);
         progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
