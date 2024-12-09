@@ -25,7 +25,7 @@ const texts = {
     "opening presentation": await t('opening presentation'),
     "opening presentation on browser": await t('opening presentation on browser'),
 };
-progress.text(`*${texts['analizing folder']} ...*`);
+progress.text(`*${texts['analizing sourcetree']} ...*`);
 //// determine the type of folder contents
 const analysis_ = await queryLLM('Considering the following source tree of a user folder, determine the category for the folder:\n'+source_tree, 
     z.object({
