@@ -560,6 +560,7 @@ marked.setOptions({
                 return tree;
             },
             userDirectory:currentWorkingDirectory,
+            actionsDirectory,
             tmp: async(ext='tmp')=>{
                 const tmpobj = tmp.fileSync({
                     postfix: '.'+ext
@@ -731,11 +732,50 @@ marked.setOptions({
                 return { error:err };
             }
         };
+        additional_context.executePython = async(code) => {
+            try {
+                const exec = await general.executePython({...additional_context},code);
+                return exec;
+            } catch(err) {
+                return { error:err };
+            }
+        };
         additional_context.spawnBash = async(custom_context={},code) => {
             const exec = await general.spawnBash({...additional_context,...custom_context},code);
             return exec;
         };
         // additional special context methods
+        additional_context.downloadTmp = async (url, file_extension = 'tmp') => {
+            const fetch = (await import('node-fetch')).default;
+            const fs = require('fs');
+        
+            // Use the tmp method to generate a temporary file
+            const tmp_file = await additional_context.tmp(file_extension);
+        
+            try {
+                const response = await fetch(url);
+        
+                if (!response.ok) {
+                    debug(`Failed to fetch the file. Status: ${response.status}`);
+                }
+        
+                // Pipe the response data to the temporary file
+                const file_stream = fs.createWriteStream(tmp_file.file);
+                await new Promise((resolve, reject) => {
+                    response.body.pipe(file_stream);
+                    response.body.on("error", reject);
+                    file_stream.on("finish", resolve);
+                });
+        
+                debug(`File downloaded successfully to temporary file: ${tmp_file.file}`);
+                return tmp_file; // Return the tmp_file object
+            } catch (error) {
+                debug(`Error downloading file from ${url}:`, error.message);
+                tmp_file.remove(); // Clean up the temp file on error
+                throw error;
+            }
+        };
+        
         additional_context.downloadFile = async (url, output) => {
             const fetch = (await import('node-fetch')).default;
             const fs = require('fs');
