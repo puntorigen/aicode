@@ -6,12 +6,12 @@ Creates or generates an image/video asset within the folder
 await setModelPreferences(["OPENAI","ANTHROPIC","GROQ"]);
 // 1. detect type,size,output_format to generate from 'user_prompt'
 progress.text(`*Detecting required asset type and specs ...*`);
-const analysis_prompt = `# The user seems to be requesting us to generate a kind of asset. Please try to determine from the following prompt, the type of asset (image or video), the resolution required (e.g. width:640, height:480, or empty if not found), the output_format (e.g. jpg, png, mp4), and the cleaned topic request (e.g. a dog jumping on a field):
+const analysis_prompt = `# The user seems to be requesting us to generate a kind of asset. Please try to determine from the following prompt, the type of asset (image, illustration or video), the resolution required (e.g. width:640, height:480, or empty if not found), the output_format (e.g. jpg, png, mp4), and the cleaned topic request (e.g. a dog jumping on a field):
 "${user_prompt}" 
 `;
 const analysis_ = await queryLLM(analysis_prompt, 
     z.object({
-        type: z.enum(["image","video","other"]).describe('the type of requested asset to generate'),
+        type: z.enum(["image","illustration","video","other"]).describe(`the type of requested asset to generate; choose illustration if it's a drawing, cartoon or illustration image`),
         resolution: z.object({
             width: z.number().describe('the asset resolution width'),
             height: z.number().describe('the asset resolution height'),
@@ -21,7 +21,7 @@ const analysis_ = await queryLLM(analysis_prompt,
         cleaned_topic: z.string().describe("cleaned topic request in english")
     })
 );
-debug('analysis_',analysis_.data);
+log('analysis_',analysis_.data);
 // 1.5. check if we can determine the output filename and location from prompt, and also using the sourcetree we have.
 progress.text(`*Determining output filename and best location ...*`);
 const file_prompt = `# given the following user task:
@@ -44,7 +44,7 @@ const file_ = await queryLLM(file_prompt,
     })
 );
 
-progress.text(`*Generating image ...*`);
+progress.text(`*Generating* #${analysis_.data.output_format.toUpperCase()}# *image* #${analysis_.data.resolution.width}x${analysis_.data.resolution.height}# *...*`);
 // generate an image; TODO add support for video
 let image = await replicate_models['create-image']({
     prompt: analysis_.data.cleaned_topic,
@@ -66,6 +66,7 @@ if (image.raw.length==0) {
 
 return {
     specs: analysis_.data,
+    generated_image: image.raw[0],
     //related_files: filtered,
     source_tree
 }
@@ -74,13 +75,24 @@ return {
 // - generate them with flux, then animate them using j2vgen-xl
 ```
 
-```json:schema
-{
-    "summary": "summary text for the project"
+```python
+#print('received context into python:',globals().keys())
+#require installs a python package
+require("qrcode-term")
+from qrcode_term import qrcode_string
+
+#picture = qrcode_string(generated_image)
+picture = qrcode_string("Hello from AI Code")
+print("Scan the QR to see the generated image")
+print(picture)
+#print(f"checking spects from JS (python)", specs)
+#print(f"Testing python code execution block")
+return {
+    "from_python": True
 }
 ```
 
 ```js
 // 18-aug-24: work in progress
-//log(schema.summary, '', 'cyan')
+log('JS reading the python return:',from_python);
 ```
