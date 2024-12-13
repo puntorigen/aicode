@@ -60,6 +60,12 @@ if (image.raw.length==0) {
     debug('saving as:',output_);
     await downloadFile(image.raw[0], output_);
     log(`Image saved as: ${output_}`, '', 'green');
+    progress.text(`*Scaling and saving image as: ${analysis_.data.output_format} ...*`);
+    await modules.image.scale(
+        output_, 
+        analysis_.data.resolution.width, 
+        analysis_.data.resolution.height
+    );
     //progress.text(`*Filed save as: ${output_} ...*`);
 }
 
@@ -73,26 +79,4 @@ return {
 // 4. generate image using Flux
 // 4.2. if it's video, generate a sequence of image descriptions:
 // - generate them with flux, then animate them using j2vgen-xl
-```
-
-```python
-#print('received context into python:',globals().keys())
-#require installs a python package
-require("qrcode-term")
-from qrcode_term import qrcode_string
-
-#picture = qrcode_string(generated_image)
-picture = qrcode_string("Hello from AI Code")
-print("Scan the QR to see the generated image")
-print(picture)
-#print(f"checking spects from JS (python)", specs)
-#print(f"Testing python code execution block")
-return {
-    "from_python": True
-}
-```
-
-```js
-// 18-aug-24: work in progress
-log('JS reading the python return:',from_python);
 ```

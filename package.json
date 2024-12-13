@@ -42,6 +42,7 @@
     "replicate": "^0.32.0",
     "safe-eval": "^0.4.1",
     "screenshot-desktop": "^1.15.0",
+    "sharp": "^0.33.5",
     "tmp": "^0.2.3",
     "xlsx": "^0.18.5",
     "xml2js": "^0.6.2",

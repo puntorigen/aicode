@@ -36,6 +36,12 @@ let argv = yargs(hideBin(process.argv))
     //default: 'English',
     description: __('Language for the output'),
   })
+  .option('confirm', {
+    alias: 'c',
+    type: 'boolean',
+    default: false,
+    description: __('Confirm each AI action before executing it'),
+  })
   .help('h')
   .alias('h', 'help')
   .parse();
@@ -466,6 +472,7 @@ marked.setOptions({
         // declare methods for js code blocks
         let additional_context = { 
             personality:persona_,
+            confirm_actions:argv.confirm, // prompt user before executing actions
             replicate_models, 
             queryLLM:async(question,schema)=>{
                 try {
@@ -640,6 +647,46 @@ marked.setOptions({
             modules: {
                 screenshot: require('screenshot-desktop'),
                 diagram: require('cli-diagram'),
+                image: {
+                    scale: async(image, width, height) => {
+                        try {
+                            // Validate the file exists
+                            if (!fs.existsSync(image)) {
+                                return null;
+                            }
+                        
+                            // Overwrite the original image file with the scaled image
+                            await sharp(image)
+                              .resize(width, height)
+                              .toFile(image);
+                        
+                            debug(`Image scaled to ${width}x${height} and saved at ${image}`);
+                          } catch (error) {
+                            debug(`Error scaling image: ${error.message}`);
+                          }
+                    },
+                    convert: async(image, format) => {
+                        try {
+                            if (!fs.existsSync(image)) {
+                                throw new Error(`Image file not found: ${image}`);
+                            }
+
+                            // Extract the file directory, name, and create the new file name
+                            const dir = path.dirname(image);
+                            const ext = path.extname(image);
+                            const baseName = path.basename(image, ext);
+                            const newFileName = `${baseName}.${format}`;
+                            const newFilePath = path.join(dir, newFileName);
+
+                            // Convert and save the image to the new format
+                            await sharp(image).toFormat(format).toFile(newFilePath);
+                            return newFilePath;
+                        } catch (error) {
+                            debug(`Error converting image to ${format}: ${error.message}`);
+                            return null;
+                        }
+                    }
+                },
                 clipboard: {
                     paste: async()=>{
                         const clipboard = require("copy-paste");
@@ -653,6 +700,19 @@ marked.setOptions({
                             });
                         });
                         return await paste_;
+                    },
+                    copy: async(text)=>{
+                        const clipboard = require("copy-paste");
+                        const copy_ = new Promise((resolve, reject) => {
+                            clipboard.copy(text, (error) => {
+                                if (error) {
+                                    reject(error);
+                                } else {
+                                    resolve(true);
+                                }
+                            });
+                        });
+                        return await copy_;
                     }
                 }
             },
