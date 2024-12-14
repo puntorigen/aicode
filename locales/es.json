@@ -4,5 +4,6 @@
   "Run with debug output": "Ejecutar en modo depurador",
   "Language for the output": "Idioma para respuestas",
   "Input string to process": "Instrucción a procesar",
-  "parsing": "leyendo"
+  "parsing": "leyendo",
+  "Confirm each AI action before executing it": "Confirm each AI action before executing it"
 }

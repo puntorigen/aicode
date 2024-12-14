@@ -54,6 +54,8 @@ progress.text(`*Generating* #${analysis_.data.output_format.toUpperCase()}# *ima
 // generate an image; TODO add support for video
 let image = await replicate_models['create-image']({
     prompt: analysis_.data.cleaned_topic,
+    width: analysis_.data.resolution.width,
+    height: analysis_.data.resolution.height
 });
 if (image.raw.length==0) {
     // TODO handle error retrying with a different approach
@@ -72,6 +74,14 @@ if (image.raw.length==0) {
         analysis_.data.resolution.width, 
         analysis_.data.resolution.height
     );
+    //if output_format is not jpg, convert it
+    if (analysis_.data.output_format != 'jpg') {
+        progress.text(`*Converting image to ${analysis_.data.output_format} ...*`);
+        await modules.image.convert(
+            output_, 
+            analysis_.data.output_format
+        );
+    }
     //progress.text(`*Filed save as: ${output_} ...*`);
 }
 

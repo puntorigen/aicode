@@ -102,6 +102,44 @@ marked.setOptions({
     renderer: new TerminalRenderer()
 });
 
+// helper methods; TODO move them to helper class
+/**
+ * Finds the best matching ratio from a list of supported ratios for the given dimensions.
+ * 
+ * @param {Array<string>} supportedRatios - Array of supported ratios as strings (e.g., ["4:3", "16:9", "3:2"]).
+ * @param {number} width - Width in pixels.
+ * @param {number} height - Height in pixels.
+ * @returns {Object} - An object with the closest 'ratio' as a string and a boolean 'perfect'.
+ */
+const findBestRatio = (supportedRatios, width, height) => {
+    if (!width || !height || !Array.isArray(supportedRatios) || supportedRatios.length === 0) {
+        debug("Invalid input. Provide width, height, and a non-empty array of supported ratios.");
+        return null;
+    }
+
+    const actualRatio = width / height;
+
+    let bestMatch = null;
+    let smallestDifference = Infinity;
+
+    for (const ratioString of supportedRatios) {
+        const [numerator, denominator] = ratioString.split(":").map(Number);
+        const ratio = numerator / denominator;
+
+        const difference = Math.abs(actualRatio - ratio);
+
+        if (difference < smallestDifference) {
+            smallestDifference = difference;
+            bestMatch = ratioString;
+        }
+    }
+
+    return {
+        ratio: bestMatch,
+        perfect: smallestDifference < 1e-5 // Treat as perfect if the difference is negligible
+    };
+};
+
 // Process the input
 !(async () => {
     // load config data
@@ -234,16 +272,18 @@ marked.setOptions({
         const replicate_ = require('replicate');
         replicate = new replicate_({ auth: db_keys_data.REPLICATE_API_TOKEN });
         replicate_models = {
-            'create-image': async(data)=>{
+            'create-image': async({ prompt, width, height, ...data })=>{
                 // cost: 333 images per 1 usd; https://replicate.com/black-forest-labs/flux-schnell
+                const best_ratio = findBestRatio(["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"], width, height);
                 const props = {
-                    prompt: '',
-                    aspect_ratio: '1:1', // values: 1:1, 16:9, 21:9, 2:3, 3:2, 4:5, 5:4, 9:16, 9:21
+                    prompt,
+                    aspect_ratio: best_ratio?best_ratio.ratio:'1:1', // values: 1:1, 16:9, 21:9, 2:3, 3:2, 4:5, 5:4, 9:16, 9:21
                     output_format: 'jpg',
                     output_quality: 100,
                     num_outputs: 1,
                     ...data
                 };
+                debug('create-image',props);
                 const response = await replicate.run(
                     "black-forest-labs/flux-schnell",
                     {
@@ -475,6 +515,7 @@ marked.setOptions({
             personality:persona_,
             confirm_actions:argv.confirm, // prompt user before executing actions
             replicate_models, 
+            findBestRatio,
             queryLLM:async(question,schema)=>{
                 try {
                     return await general.queryLLM(question,schema); 
@@ -682,6 +723,11 @@ marked.setOptions({
                                 throw new Error(`Image file not found: ${image}`);
                             }
 
+                            // copy the image to a tmp file
+                            const tmpobj = tmp.fileSync({
+                                postfix: '.jpg'
+                            });
+                            fs.copyFileSync(image, tmpobj.name);
                             // Extract the file directory, name, and create the new file name
                             const dir = path.dirname(image);
                             const ext = path.extname(image);
@@ -690,7 +736,11 @@ marked.setOptions({
                             const newFilePath = path.join(dir, newFileName);
 
                             // Convert and save the image to the new format
-                            await sharp(image).toFormat(format).toFile(newFilePath);
+                            await sharp(tmpobj.name).toFormat(format).toFile(newFilePath);
+
+                            // Remove the temporary file
+                            tmpobj.removeCallback();
+                            
                             return newFilePath;
                         } catch (error) {
                             debug(`Error converting image to ${format}: ${error.message}`);
