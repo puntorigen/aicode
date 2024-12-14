@@ -17,32 +17,38 @@ const analysis_ = await queryLLM(analysis_prompt,
             height: z.number().describe('the asset resolution height'),
         }).describe('the asset resolution'),
         filename: z.string().describe('the output filename with extension'),
+        purpose: z.boolean().describe('is there a specific purpose for this asset?'),
         output_format: z.enum(["jpg","png","mp4","none"]).describe('the asset output format'),
         cleaned_topic: z.string().describe("cleaned topic request in english")
     })
 );
 log('analysis_',analysis_.data);
-// 1.5. check if we can determine the output filename and location from prompt, and also using the sourcetree we have.
-progress.text(`*Determining output filename and best location ...*`);
-const file_prompt = `# given the following user task:
-'${user_prompt}'
+let filename_to_create = joinPaths(userDirectory,analysis_.data.filename)
+// 1.5. check if we can determine the output filename and location from prompt, and also using the sourcetree we have. Only if we believe there is a specific purpose for the asset.
+if (analysis_.data.purpose) {
 
-# and the already known specs:
-${JSON.stringify(analysis_.data)}
+    progress.text(`*Determining output filename and best location ...*`);
+    const file_prompt = `# given the following user task:
+    '${user_prompt}'
 
-# and the following source tree:
-${source_tree}
+    # and the already known specs:
+    ${JSON.stringify(analysis_.data)}
 
-# can you determine the best output filename (with extension) and location for this new asset? Use the naming conventions from the source tree if possible.
+    # and the following source tree:
+    ${source_tree}
 
-# if the user didn't specify a location reference for the file, use the current folder as the default location.
-`;
-const file_ = await queryLLM(file_prompt, 
-    z.object({
-        filename: z.string().describe('the output filename with extension'),
-        location: z.string().describe('the output location within the source tree')
-    })
-);
+    # can you determine the best output filename (with extension) and location for this new asset? Use the naming conventions from the source tree if possible.
+
+    # if the user didn't specify a location reference for the file, use the current folder as the default location.
+    `;
+    const file_ = await queryLLM(file_prompt, 
+        z.object({
+            filename: z.string().describe('the output filename with extension'),
+            location: z.string().describe('the output location within the source tree')
+        })
+    );
+    filename_to_create = joinPaths(file_.data.location,file_.data.filename)
+}
 
 progress.text(`*Generating* #${analysis_.data.output_format.toUpperCase()}# *image* #${analysis_.data.resolution.width}x${analysis_.data.resolution.height}# *...*`);
 // generate an image; TODO add support for video
@@ -56,7 +62,7 @@ if (image.raw.length==0) {
     // download image, scale it to the required resolution, and save it to the output location
     // outputdir: location + filename Path join
     debug('image',image.raw[0]);
-    const output_ = joinPaths(file_.data.location,file_.data.filename)
+    const output_ = filename_to_create
     debug('saving as:',output_);
     await downloadFile(image.raw[0], output_);
     log(`Image saved as: ${output_}`, '', 'green');

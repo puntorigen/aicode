@@ -8,6 +8,7 @@ const getSystemLocale = require('./helpers/lang')();
 const parsers = require('./parsers');
 const output_redirected = !process.stdout.isTTY;
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const sharp = require("sharp");
 //console.log('getSystemLocale',getSystemLocale);
 
 const __ = require('y18n')({
@@ -649,16 +650,25 @@ marked.setOptions({
                 diagram: require('cli-diagram'),
                 image: {
                     scale: async(image, width, height) => {
+                        const fs = require('fs'); // sync
                         try {
                             // Validate the file exists
                             if (!fs.existsSync(image)) {
                                 return null;
                             }
+                            // copy the image to a tmp file
+                            const tmpobj = tmp.fileSync({
+                                postfix: '.jpg'
+                            });
+                            fs.copyFileSync(image, tmpobj.name);
                         
                             // Overwrite the original image file with the scaled image
-                            await sharp(image)
+                            await sharp(tmpobj.name)
                               .resize(width, height)
                               .toFile(image);
+
+                            // Remove the temporary file
+                            tmpobj.removeCallback();
                         
                             debug(`Image scaled to ${width}x${height} and saved at ${image}`);
                           } catch (error) {
@@ -666,6 +676,7 @@ marked.setOptions({
                           }
                     },
                     convert: async(image, format) => {
+                        const fs = require('fs'); // sync
                         try {
                             if (!fs.existsSync(image)) {
                                 throw new Error(`Image file not found: ${image}`);
