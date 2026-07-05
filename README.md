@@ -100,12 +100,20 @@ aicode "create a presentation about this project"
 
 On first run, aicode asks for your API keys and stores them (encrypted) in `~/.aicode/keys.json`:
 
-- **OpenAI** (`OPENAI_KEY`) — used for the smart tier (`gpt-5.5`) and fast tier (`gpt-5.4-mini`)
-- **Anthropic** (`ANTHROPIC_KEY`) — `claude-sonnet-5` / `claude-haiku-4-5`
-- **Groq** (`GROQ_KEY`) — fast open-weights models
+- **OpenAI** (`OPENAI_KEY`) — smart tier (`gpt-5.5`) / fast tier (`gpt-5.4-mini`)
+- **Anthropic** (`ANTHROPIC_KEY`) — smart tier (`claude-opus-4-8`, extended thinking at extra-high effort) / fast tier (`claude-haiku-4-5`)
+- **Groq** (`GROQ_KEY`) — smart tier (`openai/gpt-oss-120b`) / fast tier (`llama-3.1-8b-instant`)
 - **Replicate** (`REPLICATE_API_TOKEN`) — optional, for image/video/speech actions
 
 Only one provider is required. Keys can also be provided via environment variables or a `.env` file. aicode routes each call to a **smart** tier (code generation, complex answers) or a **fast** tier (classification, routing) and falls back to the next configured provider on failure.
+
+#### Choosing a model / reasoning effort
+
+For providers that support reasoning effort, aicode picks a sensible default (Anthropic's `claude-opus-4-8` runs with **extra-high** extended thinking). You can override the smart-tier model or its effort in `~/.aicode/keys.json` (or via environment variables):
+
+- `ANTHROPIC_MODEL` — e.g. `claude-fable-5` (also defaults to extra-high effort) or `claude-sonnet-5`
+- `ANTHROPIC_EFFORT` — one of `none`, `low`, `medium`, `high`, `xhigh`, `max`
+- `GROQ_MODEL` / `OPENAI_MODEL` — override the smart-tier model for those providers
 
 ### Local models (offline use)
 

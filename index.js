@@ -169,7 +169,7 @@ const detectLocalProvider = async () => {
 const describeProvider = (db_keys_data) => {
     if (argv.local && db_keys_data.LOCAL_MODEL) return { provider: 'local', model: db_keys_data.LOCAL_MODEL };
     for (const p of ['OPENAI', 'ANTHROPIC', 'GROQ']) {
-        if (modelsReg.hasCredentials(p, db_keys_data)) return { provider: p.toLowerCase(), model: modelsReg.PROVIDERS[p].tiers.smart };
+        if (modelsReg.hasCredentials(p, db_keys_data)) return { provider: p.toLowerCase(), model: modelsReg.modelId(p, 'smart', db_keys_data) };
     }
     if (db_keys_data.LOCAL_MODEL) return { provider: 'local', model: db_keys_data.LOCAL_MODEL };
     return { provider: '', model: '' };
@@ -261,6 +261,12 @@ const describeProvider = (db_keys_data) => {
             LOCAL_FAST_MODEL: db_keys_data.LOCAL_FAST_MODEL,
             LOCAL_API_KEY: db_keys_data.LOCAL_API_KEY,
             LOCAL_CONTEXT: db_keys_data.LOCAL_CONTEXT,
+            LOCAL_EFFORT: db_keys_data.LOCAL_EFFORT || process.env.LOCAL_EFFORT,
+            // optional smart-model / reasoning-effort overrides
+            OPENAI_MODEL: db_keys_data.OPENAI_MODEL || process.env.OPENAI_MODEL,
+            ANTHROPIC_MODEL: db_keys_data.ANTHROPIC_MODEL || process.env.ANTHROPIC_MODEL,
+            ANTHROPIC_EFFORT: db_keys_data.ANTHROPIC_EFFORT || process.env.ANTHROPIC_EFFORT,
+            GROQ_MODEL: db_keys_data.GROQ_MODEL || process.env.GROQ_MODEL,
             maxBytesPerFile: argv.local ? 16384 : 65536,
             custom_viewers: {
                 // register custom file parsers
