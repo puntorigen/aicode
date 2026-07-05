@@ -16,36 +16,45 @@ const file = await queryLLM(
     ${english_user_prompt}
     `, 
     z.object({
-        file: z.string().describe('the file name'),
+        file: z.string().describe('the relative file path exactly as it appears in the sourcetree, including its parent directories (e.g. src/utils.js, not utils.js)'),
     })
 );
+// resolve against the real project files in case the model returned just a basename
+if (file.data && file.data.file) {
+    const known = files.filter((item)=>item && item.path);
+    if (!known.find((item)=>item.path === file.data.file)) {
+        const basename = file.data.file.split('/').pop();
+        const matches = known.filter((item)=>item.path.split('/').pop() === basename);
+        if (matches.length === 1) file.data.file = matches[0].path;
+    }
+}
 if (!file.data) {
     return { abort_:true }; // for parent to choose another template
 }
 // read the file and return it as context for the next code block
-log('file', file.data);
+debug('file', file.data);
 if (file.data && file.data.file!='') {
     const input_without_file = await queryLLM(
         `The following a user's text request. I need you to extract the action that the user is requesting without trying to reply it and without mentioning any file names: ${english_user_prompt}`
     );
-    log('input_without_file', input_without_file);
+    debug('input_without_file', input_without_file);
     const write_function = await queryLLM(
         `act as an expert software engineer, expert in nodeJS. Consider the following custom methods are available to you, and you don't have access to 'require':
         async readFile(file_from_sourcetree)-> returns a string
         async writeFile(filename, content) -> writes a file to disk (try not to use it)
 
-        # generate and return the contents for a valid nodejs async function named 'runme' code block that "${input_without_file.data}"" and return it. Name the function 'runme' that accepts a filename and write it as a const assignment. Double check the function's code and be sure it runs flawlessly on the first run performing the user requested action:\n`, z.object({
+        # generate and return the contents for a valid nodejs async function named 'runme' code block that "${input_without_file.data}"" and return it. Name the function 'runme' that accepts a filename and write it as a const assignment. The function MUST return its result as a value (string, number or object) so the caller can use it; never only print it with console.log. Double check the function's code and be sure it runs flawlessly on the first run performing the user requested action:\n`, z.object({
             //function_name: z.string().describe('the nodejs function name'),
             //function_params: z.string().describe('the nodejs function params'),
             code: z.string().describe('the nodejs async runme function code block'),
         })
     )    
-    log('write_function', write_function);
+    debug('write_function', write_function);
     //const test = await executeScript(`log('HELLO FROM DYNAMIC SCRIPT on TEMPLATE')`);
-    const test2_code = write_function.data.code + `\nawait runme('${file.data.file}');`;
+    const test2_code = write_function.data.code + `\nreturn await runme('${file.data.file}');`;
     const test2 = await executeNode(test2_code);
-    log('test2_code', test2_code);
-    log('test2_result', test2);
+    debug('test2_code', test2_code);
+    debug('test2_result', test2);
     // generate a response to the user considering the response from the nodejs script and initial question asked.
     const llm_answer = await queryLLM(
         `# Consider the following user request:

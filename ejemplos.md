@@ -54,6 +54,9 @@ aicode "crea un programa que haga un resumen de un documento" "resumen.js"
 # al ejecutar el script con aicode, este obtiene acceso al contexto y metodos de aicode
 aicode "ejecuta resumen.js" "documento.docx"
 
+# crea una libraria en nodejs que exponga los metodos de un script python local
+aicode "crear una librería en nodejs que exponga los metodos de este script test.py"
+
 # determina el costo de ejecutar este comando (--cost, -c)
 # activa modo interactivo (--interactive, -i), solicita proceder con cada paso
 

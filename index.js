@@ -43,6 +43,11 @@ let argv = yargs(hideBin(process.argv))
     default: false,
     description: __('Confirm each AI action before executing it'),
   })
+  .option('local', {
+    type: 'boolean',
+    default: false,
+    description: __('Force using the local model provider (Ollama/LM Studio) for this run'),
+  })
   .help('h')
   .alias('h', 'help')
   .parse();
@@ -65,9 +70,7 @@ if (output_redirected) {
 
 // Initialize the required variables
 const ISO6391 = require('iso-639-1')
-//const code2prompt = require('code2prompt');
-const code2prompt = require('../code2prompt');
-const safeEval = require('safe-eval');
+const code2prompt = require('./lib/engine');
 const path = require('path');
 const fs = require('fs').promises;
 const currentWorkingDirectory = process.cwd();
@@ -140,6 +143,30 @@ const findBestRatio = (supportedRatios, width, height) => {
     };
 };
 
+// probe for a local OpenAI-compatible server (Ollama, LM Studio)
+const detectLocalProvider = async () => {
+    const candidates = [
+        { name: 'Ollama', baseURL: 'http://localhost:11434/v1', tags: 'http://localhost:11434/api/tags' },
+        { name: 'LM Studio', baseURL: 'http://localhost:1234/v1', tags: 'http://localhost:1234/v1/models' },
+    ];
+    for (const candidate of candidates) {
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 1500);
+            const res = await fetch(candidate.tags, { signal: controller.signal });
+            clearTimeout(timer);
+            if (!res.ok) continue;
+            const data = await res.json();
+            // Ollama: { models: [{name}] } / LM Studio (openai format): { data: [{id}] }
+            const models = (data.models || data.data || []).map((m) => m.name || m.id).filter(Boolean);
+            if (models.length > 0) {
+                return { name: candidate.name, baseURL: candidate.baseURL, models };
+            }
+        } catch (e) { /* server not running; try next */ }
+    }
+    return null;
+};
+
 // Process the input
 !(async () => {
     // load config data
@@ -208,13 +235,58 @@ const findBestRatio = (supportedRatios, width, height) => {
             // save REPLICATE_API_TOKEN env into db_keys
             db_keys_data.REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
         }
-        // we need at least 1 key
-        if (db_keys_data.GROQ_KEY.trim() == '' && db_keys_data.OPENAI_KEY.trim() == '' && db_keys_data.ANTHROPIC_KEY.trim() == '') {
-            x_console.out({ prefix:'aicode', color:'brightRed', message:'You need to set at least one API key to continue. Quitting.' });
-            process.exit(1);
+        // we need at least 1 provider: cloud key or a local model server
+        const has_cloud_key = [db_keys_data.OPENAI_KEY, db_keys_data.GROQ_KEY, db_keys_data.ANTHROPIC_KEY].some((k) => (k || '').trim() != '');
+        const has_local = (db_keys_data.LOCAL_BASE_URL || '').trim() != '' && (db_keys_data.LOCAL_MODEL || '').trim() != '';
+        if (!has_cloud_key && !has_local) {
+            // no cloud keys: probe for a local OpenAI-compatible server (Ollama/LM Studio)
+            const local = await detectLocalProvider();
+            if (local) {
+                x_console.out({ prefix:'aicode', color:'cyan', message:x_console.colorize(`No API keys set, but *${local.name}* was detected running locally.`) });
+                const chosen = (
+                    await prompts({
+                        type: 'select',
+                        name: 'value',
+                        message: x_console.colorize(`Select a local model to use with aicode:`),
+                        choices: local.models.map((m) => ({ title: m, value: m }))
+                    })
+                ).value;
+                if (chosen) {
+                    db_keys_data.LOCAL_BASE_URL = local.baseURL;
+                    db_keys_data.LOCAL_MODEL = chosen;
+                } else {
+                    x_console.out({ prefix:'aicode', color:'brightRed', message:'You need at least one API key or a local model to continue. Quitting.' });
+                    process.exit(1);
+                }
+            } else {
+                x_console.out({ prefix:'aicode', color:'brightRed', message:'You need to set at least one API key (or run a local model with Ollama/LM Studio) to continue. Quitting.' });
+                process.exit(1);
+            }
         }
         //
         db_keys.save(db_keys_data);
+    }
+    // --local flag: force the LOCAL provider for this run
+    if (argv.local) {
+        if ((db_keys_data.LOCAL_BASE_URL || '').trim() == '' || (db_keys_data.LOCAL_MODEL || '').trim() == '') {
+            const local = await detectLocalProvider();
+            if (!local) {
+                x_console.out({ prefix:'aicode', color:'brightRed', message:'No local model server detected (tried Ollama and LM Studio). Quitting.' });
+                process.exit(1);
+            }
+            const chosen = (
+                await prompts({
+                    type: 'select',
+                    name: 'value',
+                    message: x_console.colorize(`Select a local model to use with aicode:`),
+                    choices: local.models.map((m) => ({ title: m, value: m }))
+                })
+            ).value;
+            if (!chosen) process.exit(1);
+            db_keys_data.LOCAL_BASE_URL = local.baseURL;
+            db_keys_data.LOCAL_MODEL = chosen;
+            db_keys.save(db_keys_data);
+        }
     }
     // INIT
     // show aicode logo
@@ -226,15 +298,20 @@ const findBestRatio = (supportedRatios, width, height) => {
     progress.start();
     // Define default configuration for the code2prompt instances
     const codePrompt = (template,config={}) => {
-        return new code2prompt({
+        const instance = new code2prompt({
             path: currentWorkingDirectory,
             template, //: path.join(actionsDirectory,'default.md'),
             extensions: [],
             ignore: ["**/node_modules/**","**/*.gguf","**/*.pyc","**/*.js.*","**/*.css.*","**/*.chunk.*","**/*.png","**/*.jpg","**/*.gif","**/package-lock.json","**/.env","**/.gitignore","**/LICENSE"],
-            OPENAI_KEY: db_keys_data.OPENAI_KEY,
-            GROQ_KEY: db_keys_data.GROQ_KEY,
-            ANTHROPIC_KEY: db_keys_data.ANTHROPIC_KEY,
-            maxBytesPerFile: (db_keys_data.ANTHROPIC_KEY!='')?32768:16384,
+            OPENAI_KEY: argv.local ? '' : db_keys_data.OPENAI_KEY,
+            GROQ_KEY: argv.local ? '' : db_keys_data.GROQ_KEY,
+            ANTHROPIC_KEY: argv.local ? '' : db_keys_data.ANTHROPIC_KEY,
+            LOCAL_BASE_URL: db_keys_data.LOCAL_BASE_URL,
+            LOCAL_MODEL: db_keys_data.LOCAL_MODEL,
+            LOCAL_FAST_MODEL: db_keys_data.LOCAL_FAST_MODEL,
+            LOCAL_API_KEY: db_keys_data.LOCAL_API_KEY,
+            LOCAL_CONTEXT: db_keys_data.LOCAL_CONTEXT,
+            maxBytesPerFile: argv.local ? 16384 : 65536,
             custom_viewers: {
                 // register custom file parsers
                 '.docx': async(file)=>{
@@ -265,6 +342,10 @@ const findBestRatio = (supportedRatios, width, height) => {
             debugger: argv.debug,
             ...config
         });
+        if (argv.local) {
+            instance.setModelPreferences(['LOCAL']);
+        }
+        return instance;
     }
     // init replicate if key is set
     let replicate = null, replicate_models = {};
@@ -432,16 +513,35 @@ const findBestRatio = (supportedRatios, width, height) => {
     //x_console.title({ title:'aicode', color:'magenta', titleColor:'white'})
     // -1) determine OS of the user
     const userOS = os.platform();
-    // 0) determine if the input is an action or a question, and the user input language
+    // 0) single fast-tier pre-flight call: classify input + pick action template + pick personality
     const general = codePrompt(path.join(actionsDirectory,'default.md'));
-    // run the initial analysis
-    const initial_analysis = await general.queryLLM('# Analyze the following text and return if its an action or a question, it\'s language and an english version of it:\n'+argv.input,
+    const user_action = new actionsIndex(argv.input);
+    const personality = new personalitiesIndex(argv.input);
+    // collect available action + personality descriptions (local disk reads, in parallel)
+    await Promise.all([user_action.initialize(), personality.initialize()]);
+    const action_choices = user_action.code_blocks.map((b) => `file:${b.file}\ndescription:\n${b.content}`).join('\n\n');
+    const personality_choices = personality.code_blocks.map((b) => `file:${b.file}\ndescription:\n${b.content}`).join('\n\n');
+    const initial_analysis = await general.queryLLM(
+`# Analyze the following user input text:
+${argv.input}
+
+# 1. Classify it as an action or a question, detect its language, and provide an english version of it (without translating filenames).
+
+# 2. Select the most suitable action template file for handling the input, from the following available templates and their descriptions:
+${action_choices}
+
+# 3. Select the most suitable personality template file for writing the response, from the following available personalities and their descriptions:
+${personality_choices}`,
         z.object({
             type_of: z.enum(['action','question']).describe('Type of the input'),
             english: z.string().describe('English version of text, without translating filenames'),
             language: z.enum(['English','Spanish','Portuguese','French','Japanese']).describe('language of the given input'),
-            //language_code: z.enum(['en','es','pt','fr','ja']).describe('ISO-639 language code of the given input'),
-        })
+            action_file: z.string().describe('just the absolute chosen action template file'),
+            action_reason: z.string().describe('brief reason why the action template is the best for the user input'),
+            personality_file: z.string().describe('just the absolute chosen personality template file'),
+            personality_reason: z.string().describe('brief reason why the personality template is the best for the user input'),
+        }),
+        { tier: 'fast' }
     );
     const input_lang_code = ISO6391.getCode(initial_analysis.data.language);
     if (!argv.language && initial_analysis.data.language) {
@@ -457,13 +557,14 @@ const findBestRatio = (supportedRatios, width, height) => {
     //
     const ui_text = new Translator('ui',input_lang_code);
     const ui_texts = await (async()=>{
-        return {
-            'analyzing':await ui_text.t('analyzing'),
-            'reasoning':await ui_text.t('thinking'),
-            'generating_answer':await ui_text.t('answering'),
-            'using':await ui_text.t('using'),
-            'action':await ui_text.t('action'),
-        };
+        const [analyzing, reasoning, generating_answer, using, action] = await Promise.all([
+            ui_text.t('analyzing'),
+            ui_text.t('thinking'),
+            ui_text.t('answering'),
+            ui_text.t('using'),
+            ui_text.t('action'),
+        ]);
+        return { analyzing, reasoning, generating_answer, using, action };
     })();
     //console.log('ui_texts',ui_texts);
     progress.text(`*${ui_texts['analyzing']} ...* #${initial_analysis.data.english}#`)
@@ -472,48 +573,51 @@ const findBestRatio = (supportedRatios, width, height) => {
     // 1) if the input is an action, select the best action template from the availables and run it
     //if (action_or_question.data.type_of === 'action') {
     if (true) { // always run this block
-        const user_action = new actionsIndex(argv.input);
-        const prompt = await user_action.getPrompt();
-        // which action template should we use ?
-        progress.text(`#${ui_texts['reasoning']} ...#`)
-        const action = await general.queryLLM(prompt,
-            z.object({
-                file: z.string().describe('just the absolute choosen template file'),
-                reason: z.string().describe('the reason why the template is the best for the user input'),
-            })
-        );
+        // action + personality were already chosen within the initial analysis call
+        // resolve the returned file names against the actually available templates
+        const resolveTemplateFile = (chosen, available, fallback) => {
+            let chosen_ = (chosen || '').replace(/^file:/, '').trim();
+            const basename = chosen_.split('/').pop();
+            const match = available.find((b) => b.file === chosen_) ||
+                          available.find((b) => b.file.split('/').pop() === basename);
+            if (match) return match.file;
+            debug('template not resolved, using fallback', { chosen, fallback });
+            return fallback;
+        };
+        const action = { data: {
+            file: resolveTemplateFile(initial_analysis.data.action_file, user_action.code_blocks, path.join(actionsDirectory,'answer-user-question.md')),
+            reason: initial_analysis.data.action_reason,
+        }};
+        const persona = { data: {
+            file: resolveTemplateFile(initial_analysis.data.personality_file, personality.code_blocks, path.join(__dirname,'personalities','default.md')),
+            reason: initial_analysis.data.personality_reason,
+        }};
         const template_ = action.data.file.split('/').pop().replace('.md','');
-        // choose a personality profile
-        const personality = new personalitiesIndex(argv.input);
-        const personality_prompt = await personality.getPrompt();
         progress.text(`#${ui_texts['reasoning']} ...# !${action.data.reason}!`)
-        const persona = await general.queryLLM(personality_prompt,
-            z.object({
-                file: z.string().describe('just the absolute choosen template file'),
-                reason: z.string().describe('the reason why the template is the best for the user input'),
-            })
-        );
-        if (persona.data.file.startsWith('file:')) {
-            persona.data.file = persona.data.file.replace('file:','');
-        }
         const persona_ = await personality.getPersonality(persona.data.file);
-        //progress.stop();
-        //debug('action',action.data);
-        //debug('personality',persona_);
         const translate = new Translator(template_,initial_analysis.data.language_code);
         const personality__ = await translate.t('personality');
         progress.text(`#${ui_texts['reasoning']} ...# ${personality__}: !${persona.data.reason}!`)
-        //await sleep(2500);
-
-        // if action.data.file contains 'file:', remove it
-        if (action.data.file.startsWith('file:')) {
-            action.data.file = action.data.file.replace('file:','');
-        }
-        //console.log('action',action.data);
+        // use the chosen personality as the system prompt for all LLM calls of this run
+        general.setSystemPrompt(persona_);
+        // central gate for --confirm: ask the user before executing state-changing actions
+        const confirmAction = async(description)=>{
+            if (!argv.confirm) return true;
+            progress.stop();
+            const response = await prompts({
+                type: 'confirm',
+                name: 'value',
+                initial: true,
+                message: x_console.colorize(`*aicode wants to:* ${description}. Continue?`)
+            });
+            progress.start();
+            return response.value === true;
+        };
         // declare methods for js code blocks
         let additional_context = { 
             personality:persona_,
             confirm_actions:argv.confirm, // prompt user before executing actions
+            confirmAction,
             replicate_models, 
             findBestRatio,
             queryLLM:async(question,schema)=>{
@@ -552,6 +656,7 @@ const findBestRatio = (supportedRatios, width, height) => {
                 }
             },
             setModelPreferences:async(order_models)=>{
+                if (argv.local) return true; // --local forces the LOCAL provider; ignore template preferences
                 general.setModelPreferences(order_models);
                 // ask model API keys if they don't exit and we need them
                 if (!db_keys_data.OPENAI_KEY && general.model_preferences.includes('OPENAI')) {
@@ -598,11 +703,51 @@ const findBestRatio = (supportedRatios, width, height) => {
                 return true;
             },
             writeFile:async(file,content)=>{
+                if (!await confirmAction(`write file #${file}#`)) return false;
                 await fs.writeFile(file,content, 'utf8');
-                await sleep(500);
+                code2prompt.invalidateTraverseCache(); // project files changed
+                return true;
             },
             readFile:async(file)=>{
                 return await fs.readFile(path.join(currentWorkingDirectory,file), 'utf8');
+            },
+            editFile:async(file,instructions)=>{
+                // diff-based editing: ask the smart model for search/replace blocks and apply them,
+                // instead of regenerating the whole file
+                const abs_file = path.isAbsolute(file) ? file : path.join(currentWorkingDirectory,file);
+                const original = await fs.readFile(abs_file, 'utf8');
+                const edits = await general.queryLLM(
+`# You are editing the file '${file}'. Apply the following instructions by returning a list of exact search/replace edits.
+# Rules:
+# - each 'search' text MUST be copied VERBATIM from the current file contents (including whitespace and indentation) and must be unique within the file
+# - keep each edit as small as possible while remaining unique
+# - the 'replace' text is the full replacement for the matched 'search' text
+
+# instructions:
+${instructions}
+
+# current file contents:
+${original}`,
+                    z.array(z.object({
+                        search: z.string().describe('exact verbatim text to find in the file (must be unique)'),
+                        replace: z.string().describe('replacement text'),
+                    })).describe('list of search/replace edits to apply')
+                );
+                if (!edits || !Array.isArray(edits.data)) return { ok:false, error:'no edits returned' };
+                let updated = original;
+                const failed = [];
+                for (const edit of edits.data) {
+                    if (edit.search && updated.includes(edit.search)) {
+                        updated = updated.replace(edit.search, edit.replace);
+                    } else {
+                        failed.push(edit);
+                    }
+                }
+                if (updated === original) return { ok:false, error:'no edits could be applied', failed };
+                if (!await confirmAction(`edit file #${file}# (${edits.data.length-failed.length} change(s))`)) return { ok:false, error:'cancelled by user' };
+                await fs.writeFile(abs_file, updated, 'utf8');
+                code2prompt.invalidateTraverseCache(); // project files changed
+                return { ok:true, applied:edits.data.length-failed.length, failed };
             },
             stringifyTreeFromPaths:(paths)=>{
                 const tree = general.stringifyTreeFromPaths(paths);
@@ -615,7 +760,6 @@ const findBestRatio = (supportedRatios, width, height) => {
                     postfix: '.'+ext
                 });
                 tmpFiles[tmpobj.name] = tmpobj;
-                await sleep(100);
                 return {
                     file: tmpobj.name,
                     fd: tmpobj.fd,
@@ -679,7 +823,7 @@ const findBestRatio = (supportedRatios, width, height) => {
                     const db = new EncryptedJsonDB(file);
                     let db_data = db.load();
                     db_data = {...db_data,...data};
-                    db.save(data);
+                    db.save(db_data);
                 },
                 load: (file)=>{
                     const db = new EncryptedJsonDB(file);
@@ -839,7 +983,9 @@ const findBestRatio = (supportedRatios, width, height) => {
         };
         additional_context.executeBash = async(code) => {
             try {
+                if (!await confirmAction(`run bash: #${String(code).split('\n')[0].substring(0,80)}#`)) return false;
                 const exec = await general.executeBash({...additional_context},code);
+                code2prompt.invalidateTraverseCache(); // bash may have changed project files
                 return exec;
             } catch(err) {
                 return false;
@@ -862,7 +1008,9 @@ const findBestRatio = (supportedRatios, width, height) => {
             }
         };
         additional_context.spawnBash = async(custom_context={},code) => {
+            if (!await confirmAction(`run bash: #${String(code).split('\n')[0].substring(0,80)}#`)) return false;
             const exec = await general.spawnBash({...additional_context,...custom_context},code);
+            code2prompt.invalidateTraverseCache(); // bash may have changed project files
             return exec;
         };
         // additional special context methods
@@ -934,8 +1082,18 @@ const findBestRatio = (supportedRatios, width, height) => {
                 return null;
             }
         }; 
-        // render the template using code2prompt
+        // render the template using the engine
         const actioncode = codePrompt(action.data.file);
+        actioncode.setSystemPrompt(persona_); // personality as system prompt (not injected into user prompt)
+        // stream free-text (schema-less) responses live to the terminal
+        let streaming_started = false;
+        actioncode.setStreamHandler((chunk)=>{
+            if (!streaming_started) {
+                streaming_started = true;
+                progress.stop();
+            }
+            process.stdout.write(chunk);
+        });
         progress.text(`?${ui_texts['generating_answer']} ...? #${ui_texts['using']} ${action.data.file}#`);
         try {
             let context_ = await actioncode.runTemplate(initial_analysis.data.english, {}, {...additional_context,...{ai:true}});

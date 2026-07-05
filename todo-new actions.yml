@@ -1,0 +1,19 @@
+new actions:
+- "write a suitable prompt for using this folder as context on a task for refactoring the code"
+- "create a docker file for this project"
+- "create a docker compose for the docker files in this project; manage the ports to make them work together"
+
+
+- "organize the files in this folder in folders by topic; use a version control to allow undo"
+- "write unit tests for the functions in the files in this folder"
+- "understand the images in the folder and create a podcast about them"
+    - multi-step action (if 'meta' variable exists in context, it means it is a multi-step action)
+        - 'understand the images in the folder'
+            - use moondream locally to understand the images
+            - return an array of descriptions
+        - 'create a podcast'
+            - feed the array of descriptions
+            - generate a podcast
+    - calls templates in sequence
+
+# fix the pdf file parser - done!

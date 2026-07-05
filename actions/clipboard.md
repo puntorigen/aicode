@@ -78,6 +78,19 @@ const query = await queryContext(prompt_ + pasted,
     })
 )
 progress.stop();
-log('answer from aicode',query.data);
+// report the integration plan to the user
+const report = `# Clipboard Integration\n\n${query.data.reasoning}\n\n## Steps\n${query.data.steps.map((s,i)=>`${i+1}. ${s}`).join('\n')}\n`;
+log(renderMD(report));
+// apply the file updates (asks the user first)
+for (const file of query.data.files_to_update) {
+    const apply = await select(`Apply the proposed update to ${file.path}?`,[
+        { title: 'Yes', value: true },
+        { title: 'No', value: false }
+    ]);
+    if (apply) {
+        await writeFile(joinPaths(userDirectory, file.path), file.content);
+        await answer(`Updated ${file.path}.`);
+    }
+}
 
 ```

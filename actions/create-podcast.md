@@ -1,5 +1,5 @@
 ```description
-Creates and generates podcast audio file using the folder as context
+Creates and generates a podcast audio file using the folder as context
 ```
 
 ```js:pre

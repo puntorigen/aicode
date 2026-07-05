@@ -100,8 +100,8 @@ const is_user_ok = await select(`Are you happy with the plan?`,[{
     value: false
 }]);
 if (!is_user_ok) {
-    extra_user_feedback = await answer(`Please provide feedback on what you would like to change in the plan.`);
-    return;
+    // ask() returns the user's typed feedback (answer() only prints a message)
+    extra_user_feedback = await ask(`Please provide feedback on what you would like to change in the plan.`);
 }
 //log('working plan',plan.data);
 
@@ -138,6 +138,21 @@ if (file.data.file.trim()!='') {
     );
     target_file = file_.data.file.trim();
     debug('file specified', target_file);
+}
+
+// resolve the target against the real project tree: if the file doesn't exist as given
+// but exactly one known project file matches its basename, use that path (e.g. 'convert.js' -> 'src/convert.js')
+if (target_file) {
+    const known = filtered.filter((item)=>item && item.path);
+    const exact = known.find((item)=>item.path === target_file);
+    if (!exact) {
+        const basename = target_file.split('/').pop();
+        const matches = known.filter((item)=>item.path.split('/').pop() === basename);
+        if (matches.length === 1) {
+            debug('resolved target file against project tree', { requested: target_file, resolved: matches[0].path });
+            target_file = matches[0].path;
+        }
+    }
 }
 
 await translated_progress(`generating source code`);
@@ -214,7 +229,27 @@ const final_check = await queryLLM(
 
 // save the generated code
 await translated_progress(`saving source code`, filename);
-await writeFile(filename, final_check.data.improved_code);
+let file_exists = false;
+try {
+    await readFile(filename);
+    file_exists = true;
+} catch(e) { /* new file */ }
+if (file_exists) {
+    // existing file: apply targeted search/replace edits instead of overwriting the whole file
+    const edit_result = await editFile(filename,
+`Apply the following user task to this file:
+${english_user_prompt}
+
+Use the following generated implementation as the reference for the changes:
+${final_check.data.improved_code}`);
+    if (!edit_result || !edit_result.ok) {
+        // fallback: whole-file write if targeted edits could not be applied
+        debug('editFile failed, falling back to full write', edit_result);
+        await writeFile(filename, final_check.data.improved_code);
+    }
+} else {
+    await writeFile(filename, final_check.data.improved_code);
+}
 // generate a report for the user in markdown format
 let report = `
 # Source Code Generation Report

@@ -5,5 +5,6 @@
   "Language for the output": "Idioma para respuestas",
   "Input string to process": "Instrucción a procesar",
   "parsing": "leyendo",
-  "Confirm each AI action before executing it": "Confirm each AI action before executing it"
+  "Confirm each AI action before executing it": "Confirm each AI action before executing it",
+  "Force using the local model provider (Ollama/LM Studio) for this run": "Force using the local model provider (Ollama/LM Studio) for this run"
 }
