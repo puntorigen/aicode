@@ -4,5 +4,9 @@
   "Run with debug output": "Run with debug output",
   "Language for the output": "Language for the output",
   "Input string to process": "Input string to process",
-  "parsing": "parsing"
+  "parsing": "parsing",
+  "Confirm each AI action before executing it": "Confirm each AI action before executing it",
+  "Force using the local model provider (Ollama/LM Studio) for this run": "Force using the local model provider (Ollama/LM Studio) for this run",
+  "Only print the final answer (no header, steps or footer)": "Only print the final answer (no header, steps or footer)",
+  "Open the interactive TUI session": "Open the interactive TUI session"
 }

@@ -5,6 +5,8 @@
   "Language for the output": "Idioma para respuestas",
   "Input string to process": "Instrucción a procesar",
   "parsing": "leyendo",
-  "Confirm each AI action before executing it": "Confirm each AI action before executing it",
-  "Force using the local model provider (Ollama/LM Studio) for this run": "Force using the local model provider (Ollama/LM Studio) for this run"
+  "Confirm each AI action before executing it": "Confirmar cada acción de la IA antes de ejecutarla",
+  "Force using the local model provider (Ollama/LM Studio) for this run": "Forzar el uso del proveedor de modelo local (Ollama/LM Studio) en esta ejecución",
+  "Only print the final answer (no header, steps or footer)": "Mostrar solo la respuesta final (sin encabezado, pasos ni pie)",
+  "Open the interactive TUI session": "Abrir la sesión interactiva TUI"
 }
