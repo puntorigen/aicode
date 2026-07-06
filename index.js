@@ -46,6 +46,12 @@ let argv = yargs(hideBin(process.argv))
     default: false,
     description: __('Force using the local model provider (Ollama/LM Studio) for this run'),
   })
+  .option('agent', {
+    alias: 'a',
+    type: 'boolean',
+    default: false,
+    description: __('Force agent mode: a multi-step tool-using loop instead of a single action'),
+  })
   .option('quiet', {
     alias: 'q',
     type: 'boolean',
@@ -76,6 +82,7 @@ const ISO6391 = require('iso-639-1')
 const code2prompt = require('./lib/engine');
 const modelsReg = require('./lib/models');
 const skills = require('./lib/skills');
+const agentsReg = require('./lib/agents');
 const path = require('path');
 const fs = require('fs').promises;
 const currentWorkingDirectory = process.cwd();
@@ -495,6 +502,7 @@ const describeProvider = (db_keys_data) => {
     // renderer-agnostic: everything talks to `runUI` (the transcript UI for
     // one-shot runs, or the Ink TUI's UI adapter for interactive sessions).
     // ---------------------------------------------------------------------------
+    let agentDefsCache = null;
     const runPrompt = async (input, runUI, opts = {}) => {
         const runStart = Date.now();
         code2prompt.resetUsage();
@@ -526,7 +534,9 @@ ${input}
 ${action_choices}
 
 # 3. Select the most suitable personality template file for writing the response, from the following available personalities and their descriptions:
-${personality_choices}`;
+${personality_choices}
+
+# 4. Decide whether this request needs AGENT MODE. Set needs_agent to true ONLY when fulfilling it clearly requires MULTIPLE dependent steps — e.g. reading and modifying several files, running commands and reacting to their output, or iterating until something builds/tests/works. Set needs_agent to false for a single question, a single-file change, or a one-shot generation that a single action template handles well.`;
             const analysisShape = {
                 type_of: z.enum(['action', 'question']).describe('Type of the input'),
                 english: z.string().describe('English version of text, without translating filenames'),
@@ -535,12 +545,13 @@ ${personality_choices}`;
                 action_reason: z.string().describe('brief reason why the action template is the best for the user input'),
                 personality_file: z.string().describe('just the absolute chosen personality template file'),
                 personality_reason: z.string().describe('brief reason why the personality template is the best for the user input'),
+                needs_agent: z.boolean().describe('true only if the request requires multiple dependent steps (multi-file edits, running/verifying commands, iterating); false for simple one-shot requests'),
             };
             if (hasSkills) {
                 analysisPrompt +=
 `
 
-# 4. Only if one of the following installed skills clearly matches the request better than any action template above, set skill_name to that skill's exact name; otherwise set skill_name to an empty string:
+# 5. Only if one of the following installed skills clearly matches the request better than any action template above, set skill_name to that skill's exact name; otherwise set skill_name to an empty string:
 ${skill_choices}`;
                 analysisShape.skill_name = z.string().describe('exact name of the installed skill to use, or an empty string when an action template fits better');
             }
@@ -1058,6 +1069,40 @@ ${original}`,
                 return null;
             }
         };
+        // agent mode: run a multi-step tool-using loop (agents/main.md orchestrator)
+        // instead of a single action template. Forced by --agent, auto-selected by
+        // the classifier for multi-step requests, or chosen because a skill matched
+        // (skills are usually multi-step procedures, so they default to the agent
+        // loop — the one-shot use-skill.md path stays as a fallback under --local,
+        // where tool calling may be unavailable).
+        const skillWantsAgent = !!selectedSkill && !argv.local;
+        const wantAgent = argv.agent || skillWantsAgent || (initial_analysis.data.needs_agent === true && !selectedSkill);
+        if (wantAgent) {
+            try {
+                if (!agentDefsCache) agentDefsCache = await agentsReg.loadAgents();
+                await agentsReg.runAgent({
+                    engine: general,
+                    agentName: 'main',
+                    agents: agentDefsCache,
+                    task: initial_analysis.data.english,
+                    ctx: additional_context,
+                    ui: runUI,
+                    history: opts.history || [],
+                    depth: 0,
+                    streamAnswer: true,
+                    skill: selectedSkill || null,
+                });
+            } catch (ErrAgent) {
+                try { runUI.streamEnd(); } catch (e) { }
+                runUI.statusStop();
+                if (opts.signal && opts.signal.aborted) runUI.note('run cancelled', '', 'yellow');
+                else runUI.error(ErrAgent);
+            }
+            const usageA = code2prompt.getUsage();
+            runUI.footer({ ...usageA, elapsedMs: Date.now() - runStart });
+            return usageA;
+        }
+
         // render the template using the engine
         const actioncode = codePrompt(action.data.file);
         if (opts.signal) actioncode.setAbortSignal(opts.signal);
@@ -1119,6 +1164,8 @@ ${original}`,
                 installSkill: (source, onOutput) => skills.installSkill(source, { onOutput }),
                 hasLocal: !!(db_keys_data.LOCAL_BASE_URL && db_keys_data.LOCAL_MODEL),
                 setLocal: (on) => { argv.local = !!on; },
+                agentEnabled: !!argv.agent,
+                setAgent: (on) => { argv.agent = !!on; },
                 colorEnabled: !process.env.NO_COLOR,
                 debug: !!argv.debug,
             });

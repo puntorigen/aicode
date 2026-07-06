@@ -7,6 +7,7 @@
   "parsing": "parsing",
   "Confirm each AI action before executing it": "Confirm each AI action before executing it",
   "Force using the local model provider (Ollama/LM Studio) for this run": "Force using the local model provider (Ollama/LM Studio) for this run",
+  "Force agent mode: a multi-step tool-using loop instead of a single action": "Force agent mode: a multi-step tool-using loop instead of a single action",
   "Only print the final answer (no header, steps or footer)": "Only print the final answer (no header, steps or footer)",
   "Open the interactive TUI session": "Open the interactive TUI session",
   "Install an Agent Skill from skills.sh (e.g. owner/repo), then exit": "Install an Agent Skill from skills.sh (e.g. owner/repo), then exit",

@@ -7,6 +7,7 @@ Its distinctive feature is that every capability is a plain **markdown file** (a
 - **Modern terminal UI** — a branded header, live step transcript with durations, progressively rendered (syntax-highlighted) markdown answers, colored diff previews before file writes, and a model/token/cost/time footer.
 - **Interactive TUI session** — run `aicode` with no arguments for a REPL-style session with a scrollback transcript, slash commands, and a live token/cost status bar.
 - **Multi-provider** — OpenAI, Anthropic, Groq, plus any local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM).
+- **Agent mode** — for multi-step tasks it runs a tool-using loop (read/edit files, run commands, verify, iterate) and can delegate to specialized sub-agents, with persistent project memory.
 - **Agent Skills** — discovers and runs installed [skills.sh](https://skills.sh) / `SKILL.md` skills, and can install new ones for you.
 - **Extensible** — drop a markdown file in `actions/` to add a new capability.
 
@@ -51,9 +52,12 @@ Slash commands:
 | `/actions` | List the available action templates |
 | `/model` | Choose the primary model provider for this session |
 | `/local` | Toggle the local model provider (Ollama/LM Studio) |
+| `/agent` | Toggle agent mode (multi-step tool-using loop) for the session |
 | `/skills` | List installed skills; `/skills install <owner/repo>` to add one |
-| `/clear` | Clear the screen transcript |
+| `/clear` | Clear the screen transcript and the session memory |
 | `/exit` | Quit the session |
+
+The interactive session also has **memory**: it remembers the previous turns of the conversation, so follow-ups like "now add tests for that" work. `/clear` resets it.
 
 ## One-shot usage
 
@@ -70,6 +74,7 @@ Options:
 | `-c, --confirm` | Ask before writing files or running commands (shows a diff first) |
 | `-q, --quiet` | Print only the final answer — no header, steps or footer (ideal for piping) |
 | `--local` | Force the local model provider for this run |
+| `-a, --agent` | Force agent mode: a multi-step tool-using loop instead of a single action |
 | `--tui` | Open the interactive TUI session |
 | `--install-skill <owner/repo>` | Install an Agent Skill from skills.sh, then exit |
 | `-g, --global` | With `--install-skill`: install globally (`~/`) instead of into the project |
@@ -129,9 +134,39 @@ aicode "explain this project" --local
 
 Local settings live in `~/.aicode/keys.json` as `LOCAL_BASE_URL`, `LOCAL_MODEL`, and optionally `LOCAL_FAST_MODEL` and `LOCAL_CONTEXT` (context window size, defaults to 32000). Any OpenAI-compatible server works (Ollama, LM Studio, llama.cpp server, vLLM).
 
+## Agent mode
+
+Most requests are handled by a single action template. But when a task needs **multiple dependent steps** — reading and editing several files, running commands and reacting to their output, iterating until tests pass — aicode runs an **agent loop** instead: the model thinks, calls tools, observes the results, and repeats until it's done, then writes a final answer.
+
+**When it engages:**
+
+- **Automatically** — the pre-flight classifier sets an agent flag when it detects a multi-step task. Simple questions and one-shot generations stay on the fast classic path.
+- **Forced** — pass `-a` / `--agent`, or toggle `/agent` in the interactive session.
+
+```bash
+aicode --agent "add a /health endpoint, wire it into the router, and run the tests"
+```
+
+**Tools** the agent can use (each state-changing tool respects `--confirm` and shows a diff, exactly like the classic path): `list_files`, `read_file`, `search`, `write_file`, `edit_file`, `run_bash`, `list_skills`, `use_skill`, `ask_user`, `remember`, and `delegate`.
+
+**Sub-agents (multi-agent turns).** The orchestrator (`agents/main.md`) can `delegate` a self-contained sub-task to a specialist, which runs its own restricted loop and reports back:
+
+- `explorer` — read-only research across the codebase
+- `coder` — focused implementation (read + write + run)
+- `reviewer` — read-only critique of changes
+
+Agents are just markdown files in `agents/`, following the same prompt-as-plugin pattern as actions: a ` ```description ` block (used for selection), an optional ` ```tools ` whitelist, and a markdown body used as the system prompt. Drop your own `agents/*.md` file to add a custom specialist that the orchestrator can delegate to.
+
+### Memory
+
+- **Session memory** — the interactive session remembers previous turns (input + final answer), so follow-ups like "now add tests for that" have context. Capped to the recent turns; `/clear` resets it. One-shot invocations stay stateless.
+- **Persistent project memory** — two git-committable markdown files are injected into the agent's system prompt when present:
+  - `AGENTS.md` (project root) — human-authored conventions (read-only for the agent).
+  - `.aicode/memory.md` — agent-authored notes (the working test command, project gotchas, stated preferences). The agent writes these via the `remember` tool, which appends a dated bullet through the same confirm-gated, diff-previewed file write — so you see and approve every memory write.
+
 ## Agent Skills (skills.sh)
 
-aicode understands the open [Agent Skills](https://agentskills.io) standard — folders containing a `SKILL.md` with `name` + `description` frontmatter and markdown instructions, as distributed on [skills.sh](https://skills.sh). When your request matches an installed skill better than any built-in action, aicode loads that skill's instructions and carries them out (writing files and running commands, gated by `--confirm`).
+aicode understands the open [Agent Skills](https://agentskills.io) standard — folders containing a `SKILL.md` with `name` + `description` frontmatter and markdown instructions, as distributed on [skills.sh](https://skills.sh). When your request matches an installed skill better than any built-in action, aicode runs it through the [agent loop](#agent-mode) by default — following the skill's instructions step by step, reading files, running commands and writing files as it goes (all gated by `--confirm`). Under `--local` it falls back to a single-shot execution for models without reliable tool calling.
 
 **Install a skill** from the registry (or any public GitHub repo):
 

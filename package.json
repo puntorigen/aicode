@@ -4,7 +4,7 @@
   "description": "Natural-language CLI assistant for your project folders: ask questions, generate code and docs, powered by extensible markdown actions. Supports OpenAI, Anthropic, Groq and local models (Ollama/LM Studio).",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node test/agent-loop.test.mjs"
   },
   "bin": {
     "aicode": "./index.js",
