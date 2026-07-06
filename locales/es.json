@@ -8,5 +8,7 @@
   "Confirm each AI action before executing it": "Confirmar cada acción de la IA antes de ejecutarla",
   "Force using the local model provider (Ollama/LM Studio) for this run": "Forzar el uso del proveedor de modelo local (Ollama/LM Studio) en esta ejecución",
   "Only print the final answer (no header, steps or footer)": "Mostrar solo la respuesta final (sin encabezado, pasos ni pie)",
-  "Open the interactive TUI session": "Abrir la sesión interactiva TUI"
+  "Open the interactive TUI session": "Abrir la sesión interactiva TUI",
+  "Install an Agent Skill from skills.sh (e.g. owner/repo), then exit": "Instalar una Skill de agente desde skills.sh (ej. owner/repo) y luego salir",
+  "With --install-skill: install the skill globally (~/) instead of into the project": "Con --install-skill: instalar la skill de forma global (~/) en vez de en el proyecto"
 }

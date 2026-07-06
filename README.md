@@ -7,6 +7,7 @@ Its distinctive feature is that every capability is a plain **markdown file** (a
 - **Modern terminal UI** — a branded header, live step transcript with durations, progressively rendered (syntax-highlighted) markdown answers, colored diff previews before file writes, and a model/token/cost/time footer.
 - **Interactive TUI session** — run `aicode` with no arguments for a REPL-style session with a scrollback transcript, slash commands, and a live token/cost status bar.
 - **Multi-provider** — OpenAI, Anthropic, Groq, plus any local OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM).
+- **Agent Skills** — discovers and runs installed [skills.sh](https://skills.sh) / `SKILL.md` skills, and can install new ones for you.
 - **Extensible** — drop a markdown file in `actions/` to add a new capability.
 
 ## Install
@@ -50,6 +51,7 @@ Slash commands:
 | `/actions` | List the available action templates |
 | `/model` | Choose the primary model provider for this session |
 | `/local` | Toggle the local model provider (Ollama/LM Studio) |
+| `/skills` | List installed skills; `/skills install <owner/repo>` to add one |
 | `/clear` | Clear the screen transcript |
 | `/exit` | Quit the session |
 
@@ -69,6 +71,8 @@ Options:
 | `-q, --quiet` | Print only the final answer — no header, steps or footer (ideal for piping) |
 | `--local` | Force the local model provider for this run |
 | `--tui` | Open the interactive TUI session |
+| `--install-skill <owner/repo>` | Install an Agent Skill from skills.sh, then exit |
+| `-g, --global` | With `--install-skill`: install globally (`~/`) instead of into the project |
 | `-d, --debug` | Verbose debug output (also prints full error stack traces) |
 
 Output automatically switches to clean, uncolored, sequential text when piped (e.g. `aicode "..." | cat`), and honors the `NO_COLOR` environment variable.
@@ -124,6 +128,29 @@ aicode "explain this project" --local
 ```
 
 Local settings live in `~/.aicode/keys.json` as `LOCAL_BASE_URL`, `LOCAL_MODEL`, and optionally `LOCAL_FAST_MODEL` and `LOCAL_CONTEXT` (context window size, defaults to 32000). Any OpenAI-compatible server works (Ollama, LM Studio, llama.cpp server, vLLM).
+
+## Agent Skills (skills.sh)
+
+aicode understands the open [Agent Skills](https://agentskills.io) standard — folders containing a `SKILL.md` with `name` + `description` frontmatter and markdown instructions, as distributed on [skills.sh](https://skills.sh). When your request matches an installed skill better than any built-in action, aicode loads that skill's instructions and carries them out (writing files and running commands, gated by `--confirm`).
+
+**Install a skill** from the registry (or any public GitHub repo):
+
+```bash
+# into the current project (.agents/skills/)
+aicode --install-skill vercel-labs/agent-skills
+
+# globally, available in every project
+aicode --install-skill obra/superpowers --global
+```
+
+This wraps the [`skills` CLI](https://github.com/vercel-labs/skills) (`npx skills add …`). Skills installed by any compatible tool are picked up too.
+
+**Directories scanned** (project shadows global):
+
+- Project: `./.agents/skills/`, `./.claude/skills/`
+- Global: `~/.agents/skills/`, `~/.config/agents/skills/`, `~/.claude/skills/`
+
+In the interactive session, use `/skills` to list installed skills and `/skills install <owner/repo>` to add one. You can also invoke a skill explicitly, e.g. `aicode "use the frontend-design skill to build a landing page"`.
 
 ## Writing your own actions
 

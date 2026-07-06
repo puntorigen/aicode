@@ -57,6 +57,16 @@ let argv = yargs(hideBin(process.argv))
     default: false,
     description: __('Open the interactive TUI session'),
   })
+  .option('install-skill', {
+    type: 'string',
+    description: __('Install an Agent Skill from skills.sh (e.g. owner/repo), then exit'),
+  })
+  .option('global', {
+    alias: 'g',
+    type: 'boolean',
+    default: false,
+    description: __('With --install-skill: install the skill globally (~/) instead of into the project'),
+  })
   .help('h')
   .alias('h', 'help')
   .parse();
@@ -65,6 +75,7 @@ let argv = yargs(hideBin(process.argv))
 const ISO6391 = require('iso-639-1')
 const code2prompt = require('./lib/engine');
 const modelsReg = require('./lib/models');
+const skills = require('./lib/skills');
 const path = require('path');
 const fs = require('fs').promises;
 const currentWorkingDirectory = process.cwd();
@@ -177,6 +188,16 @@ const describeProvider = (db_keys_data) => {
 
 // Process the input
 !(async () => {
+    // --install-skill: install an Agent Skill from skills.sh and exit (no keys needed)
+    if (argv['install-skill']) {
+        const src = String(argv['install-skill']).trim();
+        ui.note(`Installing skill *${src}*${argv.global ? ' (global)' : ' (project)'} via skills.sh …`);
+        const res = await skills.installSkill(src, { global: !!argv.global, inherit: true });
+        if (res.ok) ui.note('Skill installed. aicode will pick it up automatically on the next run.', '', 'green');
+        else ui.error(`Skill install failed (exit ${res.code}). Is npx available? Try: npx skills add ${src}`);
+        try { ui.dispose(); } catch (e) { }
+        process.exit(res.ok ? 0 : 1);
+    }
     // load config data
     const db_keys = new EncryptedJsonDB('keys.json');
     let db_keys_data = db_keys.load();
@@ -487,10 +508,15 @@ const describeProvider = (db_keys_data) => {
         await Promise.all([user_action.initialize(), personality.initialize()]);
         const action_choices = user_action.code_blocks.map((b) => `file:${b.file}\ndescription:\n${b.content}`).join('\n\n');
         const personality_choices = personality.code_blocks.map((b) => `file:${b.file}\ndescription:\n${b.content}`).join('\n\n');
+        // discover installed Agent Skills (skills.sh / SKILL.md); offered to the
+        // router alongside the built-in action templates
+        const skills_list = skills.discoverSkills(currentWorkingDirectory);
+        const hasSkills = skills_list.length > 0;
+        const skill_choices = skills_list.map((s) => `skill:${s.name}\ndescription:\n${s.description}`).join('\n\n');
         const analyzeStep = runUI.step('analyzing request');
         let initial_analysis;
         try {
-            initial_analysis = await general.queryLLM(
+            let analysisPrompt =
 `# Analyze the following user input text:
 ${input}
 
@@ -500,18 +526,25 @@ ${input}
 ${action_choices}
 
 # 3. Select the most suitable personality template file for writing the response, from the following available personalities and their descriptions:
-${personality_choices}`,
-                z.object({
-                    type_of: z.enum(['action', 'question']).describe('Type of the input'),
-                    english: z.string().describe('English version of text, without translating filenames'),
-                    language: z.enum(['English', 'Spanish', 'Portuguese', 'French', 'Japanese']).describe('language of the given input'),
-                    action_file: z.string().describe('just the absolute chosen action template file'),
-                    action_reason: z.string().describe('brief reason why the action template is the best for the user input'),
-                    personality_file: z.string().describe('just the absolute chosen personality template file'),
-                    personality_reason: z.string().describe('brief reason why the personality template is the best for the user input'),
-                }),
-                { tier: 'fast' }
-            );
+${personality_choices}`;
+            const analysisShape = {
+                type_of: z.enum(['action', 'question']).describe('Type of the input'),
+                english: z.string().describe('English version of text, without translating filenames'),
+                language: z.enum(['English', 'Spanish', 'Portuguese', 'French', 'Japanese']).describe('language of the given input'),
+                action_file: z.string().describe('just the absolute chosen action template file'),
+                action_reason: z.string().describe('brief reason why the action template is the best for the user input'),
+                personality_file: z.string().describe('just the absolute chosen personality template file'),
+                personality_reason: z.string().describe('brief reason why the personality template is the best for the user input'),
+            };
+            if (hasSkills) {
+                analysisPrompt +=
+`
+
+# 4. Only if one of the following installed skills clearly matches the request better than any action template above, set skill_name to that skill's exact name; otherwise set skill_name to an empty string:
+${skill_choices}`;
+                analysisShape.skill_name = z.string().describe('exact name of the installed skill to use, or an empty string when an action template fits better');
+            }
+            initial_analysis = await general.queryLLM(analysisPrompt, z.object(analysisShape), { tier: 'fast' });
         } catch (err) {
             analyzeStep.fail('analyzing request');
             runUI.statusStop();
@@ -551,11 +584,29 @@ ${personality_choices}`,
                 reason: initial_analysis.data.personality_reason,
             }
         };
+        // if the router picked an installed skill, route to the use-skill action
+        // and load its full instructions for the template scope
+        let selectedSkill = null;
+        if (hasSkills && initial_analysis.data.skill_name && String(initial_analysis.data.skill_name).trim()) {
+            const wanted = String(initial_analysis.data.skill_name).trim().toLowerCase();
+            const match = skills_list.find((s) => s.name.toLowerCase() === wanted)
+                || skills_list.find((s) => s.name.toLowerCase().includes(wanted) || wanted.includes(s.name.toLowerCase()));
+            if (match) {
+                try {
+                    const loaded = skills.loadSkill(match);
+                    selectedSkill = { ...match, body: loaded.body, files: loaded.files };
+                    action.data.file = path.join(actionsDirectory, 'use-skill.md');
+                    action.data.reason = `matched installed skill "${match.name}"`;
+                } catch (e) {
+                    debug('failed to load selected skill', { name: match.name, err: e.message });
+                }
+            }
+        }
         const template_ = action.data.file.split('/').pop().replace('.md', '');
         const persona_name = persona.data.file.split('/').pop().replace('.md', '');
         const persona_ = await personality.getPersonality(persona.data.file);
         const translate = new Translator(template_, initial_analysis.data.language_code);
-        analyzeStep.done(`${template_} · ${persona_name}`);
+        analyzeStep.done(`${selectedSkill ? 'skill:' + selectedSkill.name : template_} · ${persona_name}`);
         // use the chosen personality as the system prompt for all LLM calls of this run
         general.setSystemPrompt(persona_);
         const progress = runUI.progressShim();
@@ -691,6 +742,8 @@ ${original}`,
             },
             userDirectory: currentWorkingDirectory,
             actionsDirectory,
+            // the skill the router selected for this run (null unless use-skill.md)
+            getSelectedSkill: () => selectedSkill,
             tmp: async (ext = 'tmp') => {
                 const tmpobj = tmp.fileSync({
                     postfix: '.' + ext
@@ -1062,6 +1115,8 @@ ${original}`,
                 model: chip.model,
                 actions: actionNames,
                 availableProviders,
+                listSkills: () => skills.discoverSkills(currentWorkingDirectory),
+                installSkill: (source, onOutput) => skills.installSkill(source, { onOutput }),
                 hasLocal: !!(db_keys_data.LOCAL_BASE_URL && db_keys_data.LOCAL_MODEL),
                 setLocal: (on) => { argv.local = !!on; },
                 colorEnabled: !process.env.NO_COLOR,
