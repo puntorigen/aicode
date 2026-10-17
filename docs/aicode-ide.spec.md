@@ -36,7 +36,7 @@ Keep aicode's prompt-as-plugin core and add surfaces and capabilities around it.
 
 ### Dependencies
 
-- Add to `dependencies`: `ws` (`^8.18.0`), `orvix-cli` (`^0.2.0`), `minimatch` (`^9.0.0`), `@openrouter/ai-sdk-provider` (`^2.10.0` — the 2.x line is the last one whose peer dependency is `ai ^6.0.0`; 3.x requires `ai@7`, so do not upgrade it while `ai@6` stays).
+- Add to `dependencies`: `ws` (`^8.18.0`), `orvix-cli` (`^0.2.0`), `minimatch` (`^9.0.0`; `npm install minimatch@^9.0.0` records `^9.0.9`, the newest 9.x, and that is what `package.json` carries), `@openrouter/ai-sdk-provider` (`^2.10.0` — the 2.x line is the last one whose peer dependency is `ai ^6.0.0`; 3.x requires `ai@7`, so do not upgrade it while `ai@6` stays).
 - Add to `optionalDependencies`: `@vscode/ripgrep` (`^1.15.0`).
 - Add to `devDependencies` (root `package.json`, no nested installs): `esbuild` (`^0.24.0`), `typescript` (`^5.6.0`), `@types/vscode` (`^1.96.0`), `@types/node` (`^20.0.0`), `@types/react` (`^19.0.0`), `@types/ws` (`^8.5.0`), `@vscode/codicons` (`^0.0.36`).
 - Keep `ai@6`, `zod@3`, `ink@6`, `react@19` as they are. No Electron, no Tauri, no new UI frameworks.
@@ -371,23 +371,27 @@ $planFileContent
 
 ### `readProjectMemory(cwd, { activeFile })`
 
-- **Behavior:** called at the start of every `runAgent` (fresh read each turn). Returns `{ text, rules }` where `text` is the composed memory section and `rules` is the parsed `Rule[]` (for glob matching during the turn). Composition order and caps (characters):
-  - `AGENTS.md` at `$cwd` verbatim (cap 12000).
-  - `.cursorrules` at `$cwd`, as a rule named `.cursorrules` with `alwaysApply: true` (cap 6000).
+- **Behavior:** implemented in `lib/memory.js` (`lib/agents.js` re-exports `readProjectMemory`); called at the start of every `runAgent` (fresh read each turn, sub-agents included) with `activeFile = ctx.editor && ctx.editor.activeFile`. Returns `{ text, rules, injected }` where `text` is the composed memory section (`''` when the project has none), `rules` is the parsed `Rule[]` (for glob matching during the turn; `.cursorrules` comes first when present) and `injected` lists the names of the rules whose text made it into `text`. `activeFile` may be absolute; it is made relative to `$cwd` and ignored when it is outside the project. Composition order and caps (characters):
+  - `AGENTS.md` at `$cwd` verbatim (cap 12000) under `## AGENTS.md`.
+  - `.cursorrules` at `$cwd`, as a rule named `.cursorrules` with `alwaysApply: true` (cap 6000) under `## Rule: .cursorrules`.
   - Rules with `alwaysApply: true` (cap 6000 each) under `## Rule: $name`.
-  - Rules with `globs` matching `$activeFile` (same cap) under `## Rule: $name (applies to $activeFile)`.
-  - A list `## Available rules` with `- $name — $description` for the remaining rules (those with a description), telling the agent to call `read_rule`.
-  - `.aicode/memory.md` (cap 6000).
-  - Total cap 32000; truncated sections end with `… [truncated]`.
+  - Rules with `globs` matching `$activeFile` (same cap) under `## Rule: $name (applies to $activeFile)`. A rule with both `alwaysApply: true` and `globs` is loaded once, as an always-on rule.
+  - A list `## Available rules` (cap 4000) with `- $name — $description` for the remaining rules (those with a description), telling the agent to call `read_rule`.
+  - `.aicode/memory.md` (cap 6000) under `## .aicode/memory.md`.
+  - Total cap 32000; truncated sections end with `… [truncated]` (a cut never splits a surrogate pair). The section that crosses the total cap is cut so the whole text is exactly 32000 characters; when fewer than 200 characters of room remain it is dropped whole, and every later section is dropped too. Files are read in part (at most `4 × cap` bytes), so a huge `AGENTS.md` costs no more than a small one.
 
 ### Cursor rules
 
-- **Data:** files `$cwd/.cursor/rules/**/*.mdc`. Frontmatter between `---` lines with keys `description` (string), `globs` (string, comma-separated string, or YAML list), `alwaysApply` (boolean). Parsed into `Rule = { name, description, globs: string[], alwaysApply: boolean, body, file }` where `name` = file path relative to `.cursor/rules` without `.mdc` and `body` = text after the frontmatter.
-- **Behavior:** glob matching uses `minimatch` with `{ dot: true, matchBase: !pattern.includes('/') }` against `cwd`-relative paths. During a turn, when `read_file`, `edit_file`, or `write_file` touches a path matching a glob rule not yet injected, the tool result gets a trailing `\n\n# Applicable rule: $name\n$body` once per rule per turn.
+- **Data:** files `$cwd/.cursor/rules/**/*.mdc`. Frontmatter between `---` lines with keys `description` (string), `globs` (string, comma-separated string, or YAML list), `alwaysApply` (boolean). Parsed into `Rule = { name, description, globs: string[], alwaysApply: boolean, body, file }` where `name` = file path relative to `.cursor/rules` without `.mdc` (nested rules use `/`), `body` = text after the frontmatter and `file` = the path relative to `$cwd`.
+- **Behavior:**
+  - The frontmatter is read line by line, not as strict YAML, because Cursor writes unquoted globs such as `globs: *.ts,*.tsx`. Keys are case-insensitive; `globs` accepts a comma-separated string (commas inside `{...}` do not split), an inline list `[a, b]` or a block list; a leading `./` or `/` is dropped from every glob; `description` is one line capped at 240 characters; only the exact value `true` (any case, quoted or not) is `alwaysApply`. A file without a closed header is all body. Files are read up to 64000 characters, at most 200 rule files are considered (sorted by path), empty rules are skipped, symlinked files are followed and symlinked directories are not.
+  - Glob matching uses `minimatch` with `{ dot: true, matchBase: !pattern.includes('/') }` against `cwd`-relative paths.
+  - During a turn, when `read_file`, `edit_file`, or `write_file` touches a path matching a glob rule not yet injected, the tool result gets a trailing `\n\n# Applicable rule: $name\n$body` (body capped at 6000) once per rule per turn. "Per turn" means per `additional_context` object: sub-agents of the turn share it, and a new prompt starts clean. Rules whose text is already in the system prompt (`injected`) and `alwaysApply` rules are never appended. Failed writes and edits stay plain errors.
+  - `runPrompt` exposes the turn's editor context as `additional_context.editor` (`opts.editor || null`); only `activeFile` is used here — the `# Editor context` section of the brief belongs to the IDE phase.
 
 ### `read_rule` tool
 
-- **Inputs:** `{ name: string }`. **Returns:** `{ name, description, globs, body }` or `{ error }` listing available names.
+- **Inputs:** `{ name: string }`. **Returns:** `{ name, description, globs, body }` or `{ error }` listing available names. The name is matched exactly, then case-insensitively, then without a `.mdc` suffix, then by unique basename (an ambiguous basename is an error); `body` is capped like any tool output (12000). The tool is part of the default read-only tool set and of the `tools` blocks of `agents/main.md` and `agents/explorer.md`; a runtime built without `rules` loads them on first use.
 
 ### orvix block in `AGENTS.md`
 

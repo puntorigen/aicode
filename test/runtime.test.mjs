@@ -65,6 +65,7 @@ const ANALYSIS = {
 // router calls (generateObject) are told apart from template calls by their prompt
 function makeMock({ analysis = {}, answer = 'Hello from the mock.', templateAnswer = 'TEMPLATE_ANSWER', failRouter = false } = {}) {
     const counts = { generate: 0, stream: 0, router: 0, template: 0 };
+    const prompts = []; // the prompt of every streamed call (the agent loop's system prompt is in there)
     const model = new MockLanguageModelV3({
         doGenerate: async (options) => {
             counts.generate++;
@@ -77,8 +78,9 @@ function makeMock({ analysis = {}, answer = 'Hello from the mock.', templateAnsw
             counts.template++;
             return { content: [{ type: 'text', text: JSON.stringify({ schema: { answer: templateAnswer } }) }], finishReason: STOP, usage: USAGE, warnings: [] };
         },
-        doStream: async () => {
+        doStream: async (options) => {
             counts.stream++;
+            prompts.push(options.prompt);
             return {
                 stream: convertArrayToReadableStream([
                     { type: 'stream-start', warnings: [] },
@@ -91,7 +93,7 @@ function makeMock({ analysis = {}, answer = 'Hello from the mock.', templateAnsw
             };
         },
     });
-    return { model, counts };
+    return { model, counts, prompts };
 }
 
 // a UI object recording everything the pipeline tells it
@@ -576,6 +578,47 @@ console.log('\n[I] template model preferences');
     await applyTemplatePreferences(r.engine, ['OPENROUTER'], { keysData: r.keysData, ui: r.ui });
     ok('OpenRouter is never asked for here (it has its own flow)', r.asked.length === 0);
     keysLib.removeKey('anthropic', r.keysData);
+}
+
+// =============================================================================
+// [J] project memory reaches the agent: AGENTS.md, rules, the editor's active file
+// =============================================================================
+console.log('\n[J] project memory in agent turns');
+{
+    const MEM = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-rt-memory-'));
+    fs.writeFileSync(path.join(MEM, 'AGENTS.md'), 'Follow RUNTIME_CONVENTION_Q.\n');
+    fs.mkdirSync(path.join(MEM, '.cursor', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(MEM, '.cursor', 'rules', 'ts-style.mdc'), '---\ndescription: TypeScript style\nglobs: "*.ts"\n---\nTS_STYLE_BODY_Z\n');
+    fs.writeFileSync(path.join(MEM, 'a.ts'), 'export const a = 1;\n');
+    const systemOf = (prompts) => {
+        const msg = (prompts[0] || []).find((m) => m.role === 'system');
+        return msg ? String(msg.content) : '';
+    };
+    const rt = createRuntime({ cwd: MEM, keysData: { OPENAI_KEY: 'k' }, flags: { mode: 'agent' } });
+
+    let m = makeMock();
+    MOCK = m.model;
+    await rt.runPrompt('hello', makeUI());
+    let sys = systemOf(m.prompts);
+    ok('AGENTS.md is part of the agent system prompt', sys.includes('# Project memory') && sys.includes('RUNTIME_CONVENTION_Q'));
+    ok('a glob rule is only listed while no file is active', !sys.includes('TS_STYLE_BODY_Z') && sys.includes('- ts-style'));
+
+    m = makeMock();
+    MOCK = m.model;
+    await rt.runPrompt('hello', makeUI(), { editor: { activeFile: 'a.ts', selection: null, openFiles: ['a.ts'] } });
+    sys = systemOf(m.prompts);
+    ok("the editor's active file loads the matching rule into the prompt", sys.includes('## Rule: ts-style (applies to a.ts)') && sys.includes('TS_STYLE_BODY_Z'));
+
+    m = makeMock();
+    MOCK = m.model;
+    await rt.runPrompt('hello', makeUI(), { editor: { activeFile: 'notes.md', selection: null, openFiles: [] } });
+    ok('an active file the rule does not cover leaves it out', !systemOf(m.prompts).includes('TS_STYLE_BODY_Z'));
+
+    m = makeMock();
+    MOCK = m.model;
+    await rt.runPrompt('hello', makeUI());
+    ok('the editor context is per turn: the next turn without one starts clean', !systemOf(m.prompts).includes('TS_STYLE_BODY_Z'));
+    fs.rmSync(MEM, { recursive: true, force: true });
 }
 
 // cleanup
