@@ -789,7 +789,7 @@ jobs:
 ### Commits
 
 - **Behavior:** at least one commit per delivery phase, made only when `npm test` is green and `node --check` passes on every changed `.js`/`.cjs` file; `git status` is inspected before each commit so no unintended file is added (`git add -A` is allowed only after that check). Work-in-progress commits inside a long phase (9, 11) are fine; squashing them before push is optional.
-- **Data:** message format is Conventional Commits, `type(scope): imperative summary` with the first line at most 72 characters, a blank line, then a short bullet body of what changed and how it was verified. Subjects per phase (byte-exact first lines):
+- **Data:** message format is Conventional Commits, `type(scope): imperative summary` with the first line at most 72 characters (the only exception is the per-phase subjects listed below: they are byte-exact and 10 of them are longer, up to 86 characters), a blank line, then a short bullet body of what changed and how it was verified. Extra commits (a `fix(...)` for a defect found on the way, work-in-progress commits) follow the 72-character limit. Subjects per phase (byte-exact first lines):
   - Phase 0a: `chore: enable orvix index for this repository`
   - Phase 0b: `docs: add the aicode IDE SpecLang spec`
   - Phase 0c: `ci: run the test suite on pull requests and pushes to main`

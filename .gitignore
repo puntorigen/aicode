@@ -136,3 +136,6 @@ dist
 *.mp3
 *.wav
 .orvix/
+
+# the built IDE extension bundle is committed and published (see docs/aicode-ide.spec.md)
+!ide/extension/dist/
