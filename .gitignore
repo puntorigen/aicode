@@ -135,3 +135,4 @@ dist
 # generated media artifacts (podcasts, TTS output)
 *.mp3
 *.wav
+.orvix/
