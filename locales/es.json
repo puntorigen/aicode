@@ -11,5 +11,8 @@
   "Only print the final answer (no header, steps or footer)": "Mostrar solo la respuesta final (sin encabezado, pasos ni pie)",
   "Open the interactive TUI session": "Abrir la sesión interactiva TUI",
   "Install an Agent Skill from skills.sh (e.g. owner/repo), then exit": "Instalar una Skill de agente desde skills.sh (ej. owner/repo) y luego salir",
-  "With --install-skill: install the skill globally (~/) instead of into the project": "Con --install-skill: instalar la skill de forma global (~/) en vez de en el proyecto"
+  "With --install-skill: install the skill globally (~/) instead of into the project": "Con --install-skill: instalar la skill de forma global (~/) en vez de en el proyecto",
+  "Start the Agent Server only (for the IDE extension or other frontends)": "Iniciar solo el servidor de agente (para la extensión del IDE u otros frontends)",
+  "Port to listen on (default: server.port in ~/.aicode/config.json; 0 picks a free port)": "Puerto en el que escuchar (por defecto: server.port de ~/.aicode/config.json; 0 elige uno libre)",
+  "Handshake token clients must send (default: a random one for this run)": "Token de conexión que deben enviar los clientes (por defecto: uno aleatorio para esta ejecución)"
 }

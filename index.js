@@ -20,6 +20,17 @@ let argv = yargs(hideBin(process.argv))
       type: 'string',
     })
   })
+  .command('serve', __('Start the Agent Server only (for the IDE extension or other frontends)'), (yargs) => {
+    yargs
+      .option('port', {
+        type: 'number',
+        description: __('Port to listen on (default: server.port in ~/.aicode/config.json; 0 picks a free port)'),
+      })
+      .option('token', {
+        type: 'string',
+        description: __('Handshake token clients must send (default: a random one for this run)'),
+      })
+  })
   .option('debug', {
     alias: 'd',
     type: 'boolean',
@@ -105,13 +116,20 @@ const flags = {
 };
 const debug = (message, data) => { if (flags.debug) ui.debug(message, data); };
 
-// trap exit signals
-process.on('SIGINT', () => {
+// trap exit signals; long-running commands (aicode serve) register async cleanup
+// in `shutdownHooks`, which runs before the process exits
+const shutdownHooks = [];
+const shutdown = async () => {
     try { ui && ui.dispose && ui.dispose(); } catch (e) {}
+    for (const hook of shutdownHooks) {
+        // a hook that hangs must not keep the process alive
+        try { await Promise.race([hook(), new Promise((resolve) => setTimeout(resolve, 3000))]); } catch (e) {}
+    }
     // erase tmp files
     cleanupTmpFiles();
     process.exit(0);
-});
+};
+process.on('SIGINT', shutdown);
 
 // probe for a local OpenAI-compatible server (Ollama, LM Studio)
 const detectLocalProvider = async () => {
@@ -137,8 +155,62 @@ const detectLocalProvider = async () => {
     return null;
 };
 
+// credentials for commands that never prompt (serve): keys.json plus the
+// environment, in memory only (environment values are not written back)
+const loadKeysWithoutPrompt = () => {
+    let data = {};
+    try {
+        data = new EncryptedJsonDB('keys.json').load() || {};
+    } catch (e) {
+        ui.note(`Could not read ~/.aicode/keys.json (${e.message}); continuing without stored keys.`, '', 'yellow');
+    }
+    for (const name of ['OPENAI_KEY', 'GROQ_KEY', 'ANTHROPIC_KEY', 'REPLICATE_API_TOKEN']) {
+        if (!data[name] && process.env[name]) data[name] = process.env[name];
+    }
+    return data;
+};
+
+// aicode serve: only the Agent Server, in the foreground until Ctrl-C
+const runServe = async () => {
+    const { startAgentServer } = require('./lib/server');
+    const config = require('./lib/config').loadConfig();
+    if (argv.port !== undefined && (!Number.isInteger(argv.port) || argv.port < 0 || argv.port > 65535)) {
+        ui.error(new Error(`Invalid --port "${argv.port}": use an integer between 0 and 65535.`));
+        process.exit(1);
+    }
+    const port = argv.port !== undefined ? argv.port : config.server.port;
+    const keysData = loadKeysWithoutPrompt();
+    let server;
+    try {
+        server = await startAgentServer({
+            port,
+            token: argv.token || undefined,
+            debug: (message, data) => { if (flags.debug) ui.debug(message, data); },
+            // one runtime per session, all sharing the same key store
+            runtimeFactory: (sessionCwd, sessionFlags, extras = {}) => createRuntime({
+                cwd: sessionCwd,
+                keysData,
+                flags: sessionFlags,
+                debug: extras.debug,
+                ide: extras.ide || null,
+            }),
+        });
+    } catch (err) {
+        ui.error(err && err.code === 'EADDRINUSE' ? new Error(`${err.message}. Use --port <n> (0 picks a free port).`) : err);
+        process.exit(1);
+    }
+    shutdownHooks.push(() => server.close());
+    process.on('SIGTERM', shutdown);
+    process.stdout.write(`aicode agent server ready\n  url    ${server.url}\n  token  ${server.token}\nPress Ctrl-C to stop.\n`);
+};
+
 // Process the input
 !(async () => {
+    // serve never runs the interactive key prompts
+    if (argv._[0] === 'serve') {
+        await runServe();
+        return;
+    }
     // --install-skill: install an Agent Skill from skills.sh and exit (no keys needed)
     if (argv['install-skill']) {
         const src = String(argv['install-skill']).trim();

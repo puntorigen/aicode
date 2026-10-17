@@ -70,6 +70,7 @@
     "screenshot-desktop": "^1.15.0",
     "sharp": "^0.33.5",
     "tmp": "^0.2.3",
+    "ws": "^8.18.0",
     "xlsx": "^0.18.5",
     "xml2js": "^0.6.2",
     "y18n": "^5.0.8",
@@ -78,5 +79,10 @@
   },
   "optionalDependencies": {
     "pythonia": "^1.2.1"
+  },
+  "overrides": {
+    "pythonia": {
+      "ws": "$ws"
+    }
   }
 }
