@@ -6,8 +6,10 @@ import { createRequire } from 'module';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
 
 const require = createRequire(import.meta.url);
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 // isolate HOME (keys.json, caches, global skills) before anything resolves it
 const REAL_HOME = process.env.HOME;
@@ -31,8 +33,13 @@ const ok = (name, cond) => { console.log(`${cond ? '  ok  ' : ' FAIL '}${name}`)
 
 // --- provider plumbing -> mock model -----------------------------------------
 let MOCK = null;
+// what each model creation asked for: provider, tier and the model/effort the engine config carried
+const CREATED = [];
 models.resolveProvider = (prefs) => (prefs && prefs.length ? prefs[0] : null);
-models.createModel = () => MOCK;
+models.createModel = (provider, tier, config = {}) => {
+    CREATED.push({ provider, tier, model: config[`${provider}_MODEL`], effort: config[`${provider}_EFFORT`] });
+    return MOCK;
+};
 models.callOptions = () => ({});
 models.modelId = () => 'mock-model';
 models.estimateCost = () => 0;
@@ -399,6 +406,176 @@ console.log('\n[G] makeFileHelpers');
     ok('bash runs in the helpers\' base directory with the turn context', ranWith.ctx.userDirectory === dir && ranWith.ctx.marker === 1);
 
     fs.rmSync(dir, { recursive: true, force: true });
+}
+
+// =============================================================================
+// [H] the model the user picked: chip, remembered default, engine routing
+// =============================================================================
+console.log('\n[H] model selection');
+{
+    const { applyModelSelection } = require('../lib/runtime');
+    const config = require('../lib/config');
+    const openrouter = require('../lib/openrouter');
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const KIMI = { provider: 'OPENROUTER', model: 'moonshotai/kimi-k3', effort: 'max' };
+    const GPT = { provider: 'OPENAI', model: 'gpt-5.5', effort: null };
+    const template = path.join(ROOT, 'actions', 'default.md');
+    const remember = (models_) => config.saveConfig({ models: { selected: null, recent: [], fallbackOnError: false, ...models_ } });
+    remember({});
+
+    // the catalog gives the picked model its display name
+    const fixture = JSON.parse(fs.readFileSync(path.join(ROOT, 'test', 'fixtures', 'openrouter-models.json'), 'utf8'));
+    fs.mkdirSync(path.dirname(openrouter.cacheFile()), { recursive: true });
+    fs.writeFileSync(openrouter.cacheFile(), JSON.stringify({ fetchedAt: new Date().toISOString(), models: fixture.data.map(openrouter.normalizeModel).filter(Boolean) }));
+
+    // --- the chip without a pick walks the default provider order
+    const keys = { OPENROUTER_KEY: 'k', ANTHROPIC_KEY: 'k', OPENAI_KEY: 'k', GROQ_KEY: 'k' };
+    const rt = createRuntime({ cwd: PROJECT, keysData: keys, flags: {} });
+    ok('no pick: OpenRouter is the first provider with credentials', rt.describeProvider().provider === 'openrouter');
+    keys.OPENROUTER_KEY = '';
+    ok('...then Anthropic', rt.describeProvider().provider === 'anthropic');
+    keys.ANTHROPIC_KEY = '';
+    ok('...then OpenAI', rt.describeProvider().provider === 'openai');
+    keys.OPENAI_KEY = '';
+    ok('...then Groq', rt.describeProvider().provider === 'groq');
+    keys.OPENROUTER_KEY = 'k'; keys.ANTHROPIC_KEY = 'k'; keys.OPENAI_KEY = 'k';
+
+    // --- a pick shows its short name, MAX only for max
+    rt.flags.model = KIMI;
+    ok('a pick drives the chip: short name and MAX', same(rt.describeProvider(), { provider: 'openrouter', model: 'Kimi K3 MAX' }));
+    rt.flags.model = { ...KIMI, effort: 'high' };
+    ok('...MAX only for the max effort', rt.describeProvider().model === 'Kimi K3');
+    rt.flags.model = GPT;
+    ok('...and a built-in model shows its id', same(rt.describeProvider(), { provider: 'openai', model: 'gpt-5.5' }));
+    rt.flags.model = KIMI;
+    keys.LOCAL_BASE_URL = 'http://localhost:1/v1'; keys.LOCAL_MODEL = 'llama-test';
+    rt.flags.local = true;
+    ok('--local beats the pick in the chip', same(rt.describeProvider(), { provider: 'local', model: 'llama-test' }));
+    rt.flags.local = false;
+    rt.flags.model = null;
+    ok('clearing the pick returns to the default order', rt.describeProvider().provider === 'openrouter');
+    delete keys.LOCAL_BASE_URL; delete keys.LOCAL_MODEL;
+
+    // --- the remembered default seeds new runtimes
+    remember({ selected: KIMI });
+    const seeded = createRuntime({ cwd: PROJECT, keysData: { OPENROUTER_KEY: 'k' }, flags: {} });
+    ok('the remembered selection seeds flags.model', same(seeded.flags.model, KIMI) && same(seeded.describeProvider(), { provider: 'openrouter', model: 'Kimi K3 MAX' }));
+    ok('...only while its provider still has credentials', createRuntime({ cwd: PROJECT, keysData: { OPENAI_KEY: 'k' }, flags: {} }).flags.model === null);
+    const explicit = { model: GPT };
+    ok('...and never over a pick the caller made', createRuntime({ cwd: PROJECT, keysData: { OPENROUTER_KEY: 'k', OPENAI_KEY: 'k' }, flags: explicit }).flags.model === GPT);
+    ok('...a flags.model that is already null is seeded too', same(createRuntime({ cwd: PROJECT, keysData: { OPENROUTER_KEY: 'k' }, flags: { model: null } }).flags.model, KIMI));
+    remember({ selected: null });
+    ok('without a remembered selection nothing is seeded', createRuntime({ cwd: PROJECT, keysData: { OPENROUTER_KEY: 'k' }, flags: {} }).flags.model === null);
+    remember({ selected: { provider: 'NOPE', model: 'x', effort: null } });
+    ok('a damaged remembered selection is ignored', createRuntime({ cwd: PROJECT, keysData: { OPENROUTER_KEY: 'k' }, flags: {} }).flags.model === null);
+    remember({ selected: null });
+
+    // --- applyModelSelection routes an engine to the pick
+    const engine = () => rt.codePrompt(template);
+    let e = engine();
+    ok('an engine starts on the default order', same(e.modelPreferences, models.DEFAULT_PROVIDER_ORDER));
+    applyModelSelection(e, KIMI, keys);
+    ok('the pick leaves exactly one provider (no silent fallback)', same(e.modelPreferences, ['OPENROUTER']));
+    ok('...with its model and effort in the engine config', e.config.OPENROUTER_MODEL === 'moonshotai/kimi-k3' && e.config.OPENROUTER_EFFORT === 'max');
+    e = engine();
+    applyModelSelection(e, { ...KIMI, effort: null }, keys);
+    ok('a null effort resets the effort override too', e.config.OPENROUTER_EFFORT === null);
+    e = engine();
+    applyModelSelection(e, GPT, keys);
+    ok('a built-in provider gets its model override', same(e.modelPreferences, ['OPENAI']) && e.config.OPENAI_MODEL === 'gpt-5.5');
+    e = engine();
+    keys.LOCAL_BASE_URL = 'http://localhost:1/v1'; keys.LOCAL_MODEL = 'llama-test'; keys.LOCAL_FAST_MODEL = 'llama-fast';
+    const localEngine = rt.codePrompt(template);
+    applyModelSelection(localEngine, { provider: 'LOCAL', model: 'llama-big', effort: 'high' }, keys);
+    ok('LOCAL swaps the model and keeps the fast model as configured', localEngine.config.LOCAL_MODEL === 'llama-big' && localEngine.config.LOCAL_EFFORT === 'high' && localEngine.config.LOCAL_FAST_MODEL === 'llama-fast');
+    delete keys.LOCAL_BASE_URL; delete keys.LOCAL_MODEL; delete keys.LOCAL_FAST_MODEL;
+    const refused = (() => { try { applyModelSelection(engine(), { provider: 'GROQ', model: 'x', effort: null }, { OPENROUTER_KEY: 'k' }); return null; } catch (err) { return err; } })();
+    ok('a provider without credentials is refused', refused instanceof Error && refused.message === 'no credentials for GROQ');
+    remember({ fallbackOnError: true });
+    e = engine();
+    applyModelSelection(e, GPT, keys);
+    ok('fallbackOnError keeps the rest of the default order behind the pick', same(e.modelPreferences, ['OPENAI', 'OPENROUTER', 'ANTHROPIC', 'GROQ', 'LOCAL']));
+    remember({ fallbackOnError: false });
+
+    // --- a whole turn runs on the pick
+    const run = async (flags, runKeys, opts, input = 'say hello') => {
+        CREATED.length = 0;
+        MOCK = makeMock().model;
+        const turn = createRuntime({ cwd: PROJECT, keysData: runKeys, flags: { mode: 'agent', ...flags } });
+        const ui = makeUI();
+        await turn.runPrompt(input, ui, opts);
+        return { ui, created: CREATED.slice() };
+    };
+    let turn = await run({ model: KIMI }, { OPENROUTER_KEY: 'k', OPENAI_KEY: 'k' });
+    ok('every call of the turn goes to the picked provider', turn.created.length >= 2 && turn.created.every((c) => c.provider === 'OPENROUTER'));
+    ok('...the answer runs on the picked model and effort', turn.created.filter((c) => c.tier === 'smart').every((c) => c.model === 'moonshotai/kimi-k3' && c.effort === 'max') && turn.created.some((c) => c.tier === 'smart'));
+    ok('...and the quick analysis uses the fast tier of that provider', turn.created.some((c) => c.tier === 'fast'));
+    ok('...without errors', !has(turn.ui, 'error') && has(turn.ui, 'footer') && turn.ui.streamed === 'Hello from the mock.');
+    turn = await run({ model: KIMI }, { OPENROUTER_KEY: 'k', OPENAI_KEY: 'k' }, { model: GPT });
+    ok('opts.model beats flags.model for one turn', turn.created.length >= 2 && turn.created.every((c) => c.provider === 'OPENAI') && turn.created.filter((c) => c.tier === 'smart').every((c) => c.model === 'gpt-5.5'));
+    turn = await run({ model: KIMI, local: true }, { LOCAL_BASE_URL: 'http://localhost:1/v1', LOCAL_MODEL: 'llama-test', OPENROUTER_KEY: 'k' });
+    ok('--local ignores the pick', turn.created.length >= 2 && turn.created.every((c) => c.provider === 'LOCAL'));
+    turn = await run({ model: KIMI, modelPreferences: ['OPENAI'] }, { OPENROUTER_KEY: 'k', OPENAI_KEY: 'k' });
+    ok('a modelPreferences flag does not override the pick', turn.created.every((c) => c.provider === 'OPENROUTER'));
+    turn = await run({ model: null, modelPreferences: ['OPENAI'] }, { OPENROUTER_KEY: 'k', OPENAI_KEY: 'k' });
+    ok('...but it still applies without a pick', turn.created.length >= 2 && turn.created.every((c) => c.provider === 'OPENAI'));
+    turn = await run({ model: { provider: 'GROQ', model: 'x', effort: null } }, { OPENROUTER_KEY: 'k' });
+    ok('a pick whose key is gone ends the turn with an error instead of throwing', has(turn.ui, 'error', (e_) => e_[1] === 'no credentials for GROQ') && has(turn.ui, 'footer') && turn.created.length === 0);
+}
+
+// =============================================================================
+// [I] what a template's setModelPreferences does
+// =============================================================================
+console.log('\n[I] template model preferences');
+{
+    const { applyTemplatePreferences } = require('../lib/runtime');
+    const keysLib = require('../lib/keys');
+    const EncryptedJsonDB = require('../helpers/db');
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const template = path.join(ROOT, 'actions', 'default.md');
+    const ORDER = ['OPENAI', 'ANTHROPIC', 'GROQ'];
+    const rig = (keysData = {}, { answer = '', canAsk = true, canAskSecrets } = {}) => {
+        const asked = [];
+        const ui = canAsk ? { ask: async (q) => { asked.push(q); return answer; } } : {};
+        if (canAskSecrets !== undefined) ui.canAskSecrets = canAskSecrets;
+        const engine = new Code2Prompt({ template, ...keysData });
+        return { engine, ui, asked, keysData };
+    };
+    const apply = (r, extra = {}) => applyTemplatePreferences(r.engine, ORDER, { keysData: r.keysData, ui: r.ui, ...extra });
+
+    let r = rig({ OPENROUTER_KEY: 'k' });
+    ok('the template order goes first, credentialed providers it did not name follow', (await apply(r)) === true && same(r.engine.modelPreferences, ['OPENAI', 'ANTHROPIC', 'GROQ', 'OPENROUTER']) && r.asked.length === 0);
+    r = rig({ OPENROUTER_KEY: 'k' });
+    await apply(r, { local: true });
+    ok('--local ignores the template order', same(r.engine.modelPreferences, models.DEFAULT_PROVIDER_ORDER) && r.asked.length === 0);
+    r = rig({ OPENROUTER_KEY: 'k' });
+    await apply(r, { selection: { provider: 'OPENROUTER', model: 'x/y', effort: null } });
+    ok('a picked model wins over the template order', same(r.engine.modelPreferences, models.DEFAULT_PROVIDER_ORDER) && r.asked.length === 0);
+
+    r = rig({});
+    ok('nothing can serve the request: the first named provider without a key is asked for', (await apply(r)) === true && r.asked.length === 1 && r.asked[0] === 'Enter your *OPENAI API key* (or empty if none):');
+    r = rig({}, { answer: '  sk-brand-new-key-123456  ' });
+    await apply(r);
+    const stored = new EncryptedJsonDB('keys.json').load();
+    ok('an answer is trimmed, stored for later runs and handed to the engine', r.keysData.OPENAI_KEY === 'sk-brand-new-key-123456' && stored.OPENAI_KEY === 'sk-brand-new-key-123456' && r.engine.config.OPENAI_KEY === 'sk-brand-new-key-123456' && r.asked.length === 1);
+    keysLib.removeKey('openai', r.keysData);
+    r = rig({}, { answer: '   ' });
+    await apply(r);
+    ok('an empty answer stores nothing', r.keysData.OPENAI_KEY === undefined && (new EncryptedJsonDB('keys.json').load().OPENAI_KEY === undefined) && r.asked.length === 1);
+    r = rig({ GROQ_KEY: 'k' });
+    await apply(r);
+    ok('a key for any listed provider is enough: no question', r.asked.length === 0);
+    r = rig({}, { canAsk: false });
+    ok('a client without ask is never asked', (await apply(r)) === true && r.asked.length === 0);
+    r = rig({}, { canAskSecrets: false });
+    ok('a client that cannot take secrets is never asked', (await apply(r)) === true && r.asked.length === 0);
+    r = rig({});
+    await applyTemplatePreferences(r.engine, ['ANTHROPIC'], { keysData: r.keysData, ui: r.ui });
+    ok('only the providers the template names are asked for', r.asked.length === 1 && r.asked[0].includes('ANTHROPIC'));
+    r = rig({});
+    await applyTemplatePreferences(r.engine, ['OPENROUTER'], { keysData: r.keysData, ui: r.ui });
+    ok('OpenRouter is never asked for here (it has its own flow)', r.asked.length === 0);
+    keysLib.removeKey('anthropic', r.keysData);
 }
 
 // cleanup

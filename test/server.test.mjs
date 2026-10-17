@@ -389,7 +389,8 @@ console.log('\n[C] handshake and transport security');
 // =============================================================================
 console.log('\n[D] sessions: create / flags / validation');
 {
-    const server = await start();
+    // the server-level credentials: only OpenAI is configured
+    const server = await start({ keysData: { OPENAI_KEY: SECRET } });
     const c = await login(server);
 
     c.send({ type: 'session.create', id: 'c1', cwd: PROJECT });
@@ -428,7 +429,12 @@ console.log('\n[D] sessions: create / flags / validation');
     ok('an invalid mode -> error bad_flags', (await bad({ cwd: PROJECT, flags: { mode: 'chaos' } })).code === 'bad_flags');
     ok('an unknown provider in modelPreferences -> error bad_flags', (await bad({ cwd: PROJECT, flags: { modelPreferences: ['NOPE'] } })).code === 'bad_flags');
     ok('flags must be an object', (await bad({ cwd: PROJECT, flags: [1] })).code === 'bad_flags');
-    ok('selecting a model is not available yet (-> unknown_model)', (await bad({ cwd: PROJECT, flags: { model: { provider: 'OPENAI', model: 'x', effort: null } } })).code === 'unknown_model');
+    const withModel = (model) => ({ cwd: PROJECT, flags: { model } });
+    ok('a model selection must be an object', (await bad(withModel('gpt'))).code === 'unknown_model');
+    ok('a selection of an unknown provider -> error unknown_model', (await bad(withModel({ provider: 'NOPE', model: 'x', effort: null }))).code === 'unknown_model');
+    ok('a selection without a model id -> error unknown_model', (await bad(withModel({ provider: 'OPENAI', model: '  ', effort: null }))).code === 'unknown_model');
+    ok('a selection with an unknown effort -> error unknown_model', (await bad(withModel({ provider: 'OPENAI', model: 'x', effort: 'turbo' }))).code === 'unknown_model');
+    ok('a selection of a provider without credentials -> error no_credentials', (await bad(withModel({ provider: 'ANTHROPIC', model: 'claude-sonnet-5', effort: null }))).code === 'no_credentials');
     ok('--local without a local model -> error no_credentials', (await bad({ cwd: PROJECT, flags: { local: true } })).code === 'no_credentials');
     ok('model: null is accepted', (await newSession(c, { model: null })).flags.model === null);
 
@@ -443,7 +449,11 @@ console.log('\n[D] sessions: create / flags / validation');
     const e1 = await flagErr({ mode: 'bogus' });
     ok('session.flags with an invalid value -> session.error bad_flags and no change', e1.code === 'bad_flags' && e1.sessionId === sid && rtOfFirst.flags.mode === 'plan');
     ok('session.flags local without a local model -> session.error no_credentials', (await flagErr({ local: true })).code === 'no_credentials' && rtOfFirst.flags.local === false);
-    ok('session.flags with a model selection -> session.error unknown_model', (await flagErr({ model: { provider: 'OPENAI', model: 'x', effort: null } })).code === 'unknown_model');
+    const modelErr = await flagErr({ model: { provider: 'NOPE', model: 'x', effort: null } });
+    ok('session.flags with an invalid selection -> session.error unknown_model and no change', modelErr.code === 'unknown_model' && modelErr.sessionId === sid && rtOfFirst.flags.model === null);
+    const credErr = await flagErr({ model: { provider: 'ANTHROPIC', model: 'claude-sonnet-5', effort: null } });
+    ok('session.flags with a provider that has no credentials -> session.error no_credentials and no change', credErr.code === 'no_credentials' && rtOfFirst.flags.model === null);
+    ok('a rejected selection is not remembered', config.loadConfig().models.selected === null);
     c.send({ type: 'session.flags', sessionId: 'no-such-session', flags: { debug: false } });
     const noSession = await c.next(type('session.error'));
     ok('session.flags on an unknown session -> session.error not_found', noSession.code === 'not_found' && noSession.sessionId === 'no-such-session');
@@ -898,9 +908,187 @@ console.log('\n[J] shutdown');
 }
 
 // =============================================================================
-// [K] the real runtime behind the server (mock model, no network)
+// [K] models and keys over the wire (a local http stub plays OpenRouter)
 // =============================================================================
-console.log('\n[K] real runtime end to end');
+console.log('\n[K] models.list / keys.* / model selection');
+{
+    const openrouter = require('../lib/openrouter');
+    const EncryptedJsonDB = require('../helpers/db');
+    const fixtureRaw = JSON.parse(fs.readFileSync(new URL('./fixtures/openrouter-models.json', import.meta.url), 'utf8'));
+    const GOOD = 'sk-or-good-key-123456';
+    const UNLIMITED = 'sk-or-unlimited-key-1';
+    const BAD = 'sk-or-bad-key-0000';
+
+    // the OpenRouter stand-in: /models (switchable to failing) and /key
+    const seen = [];
+    const mode = { models: 'ok' };
+    const stubApi = http.createServer((req, res) => {
+        const auth = req.headers.authorization || '';
+        seen.push({ url: req.url, auth });
+        const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+        if (req.url === '/models') return mode.models === 'fail' ? send(500, { error: 'boom' }) : send(200, fixtureRaw);
+        if (req.url === '/key') {
+            if (auth === `Bearer ${GOOD}`) return send(200, { data: { label: 'my-test-key', usage: 1.5, limit: 10, limit_remaining: 8.5, is_free_tier: false } });
+            if (auth === `Bearer ${UNLIMITED}`) return send(200, { data: { label: 'free-spender', usage: 0, limit: null, limit_remaining: null, is_free_tier: false } });
+            return send(401, { error: { message: 'No auth credentials found' } });
+        }
+        return send(404, {});
+    });
+    await new Promise((resolve) => stubApi.listen(0, '127.0.0.1', resolve));
+    process.env.AICODE_OPENROUTER_API = `http://127.0.0.1:${stubApi.address().port}`;
+    const requestsTo = (url) => seen.filter((r) => r.url === url).length;
+
+    const installCatalog = (fetchedAt) => {
+        const normalized = fixtureRaw.data.map(openrouter.normalizeModel).filter(Boolean);
+        fs.mkdirSync(path.dirname(openrouter.cacheFile()), { recursive: true });
+        fs.writeFileSync(openrouter.cacheFile(), JSON.stringify({ fetchedAt, models: normalized }) + '\n');
+    };
+    installCatalog(new Date().toISOString());
+    config.saveConfig({ models: { selected: null, recent: ['moonshotai/kimi-k3'] } });
+
+    // one key store shared by the server and every runtime, like `aicode serve` does
+    const ENV_GROQ = 'env-groq-key-abcdefgh';
+    process.env.GROQ_KEY = ENV_GROQ;
+    const sharedKeys = { OPENAI_KEY: SECRET, GROQ_KEY: ENV_GROQ };
+    const sharedFactory = (cwd, flags, extras) => {
+        const rt = {
+            cwd, flags, extras, calls: [], keysData: sharedKeys,
+            describeProvider: () => ({ provider: 'stub', model: 'stub-1' }),
+            usage: () => null,
+            runPrompt: async (input, ui, opts) => { rt.calls.push({ input, opts }); return await echo(input, ui, opts, rt); },
+        };
+        runtimes.push(rt);
+        return rt;
+    };
+    const server = await startAgentServer({ token: TOKEN, keysData: sharedKeys, runtimeFactory: sharedFactory });
+    const c = await login(server);
+    const ask = async (msg, expected) => { c.send(msg); return await c.next((m) => m.type === expected || m.type === 'error'); };
+
+    // ---- models.list -------------------------------------------------------------
+    const listed = await ask({ type: 'models.list', id: 'm1' }, 'models.result');
+    ok('models.list answers models.result with the request id', listed.type === 'models.result' && listed.id === 'm1' && Array.isArray(listed.models));
+    ok('the catalog summary counts the OpenRouter models and is fresh', listed.catalog && listed.catalog.count === 21 && listed.catalog.stale === false && typeof listed.catalog.fetchedAt === 'string');
+    ok('no selection is remembered yet', listed.selected === null);
+    ok('recent models come first and carry their groups', listed.models[0].id === 'moonshotai/kimi-k3' && listed.models[0].groups.includes('recent') && listed.models[0].groups.includes('featured'));
+    ok('featured vendors list their newest models', listed.models.some((m) => m.id === 'anthropic/claude-sonnet-5.5' && m.groups.join() === 'featured'));
+    ok('OpenRouter entries are unavailable without a key; configured providers are available', listed.models.filter((m) => m.provider === 'OPENROUTER').every((m) => m.available === false) && listed.models.some((m) => m.provider === 'OPENAI' && m.available === true));
+    ok('a ModelInfo carries display pricing per 1M tokens', (() => { const sonnet = listed.models.find((m) => m.id === 'anthropic/claude-sonnet-5.5'); return sonnet && sonnet.pricing.prompt === 2 && sonnet.pricing.completion === 10 && sonnet.shortName === 'Claude Sonnet 5.5'; })());
+    const filtered = await ask({ type: 'models.list', id: 'm2', query: 'kimi' }, 'models.result');
+    ok('models.list filters by query', filtered.models.length >= 2 && filtered.models.every((m) => /kimi/i.test(m.id) || /kimi/i.test(m.name)));
+    const none = await ask({ type: 'models.list', id: 'm3', query: 'zzz-no-such-model' }, 'models.result');
+    ok('a query without matches lists nothing', none.models.length === 0);
+
+    // ---- catalog refresh -----------------------------------------------------------
+    const before = requestsTo('/models');
+    const refreshed = await ask({ type: 'models.list', id: 'm4', refresh: true }, 'models.result');
+    ok('refresh: true fetches the catalog before answering', requestsTo('/models') === before + 1 && refreshed.catalog.count === 21 && !('error' in refreshed));
+    mode.models = 'fail';
+    const failed = await ask({ type: 'models.list', id: 'm5', refresh: true }, 'models.result');
+    ok('a failed refresh answers from the cache and reports the error', failed.models.length === listed.models.length && typeof failed.error === 'string' && failed.error.includes('500'));
+    mode.models = 'ok';
+    installCatalog(new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString());
+    const calls = requestsTo('/models');
+    const stale = await ask({ type: 'models.list', id: 'm6' }, 'models.result');
+    ok('a stale catalog is flagged', stale.catalog.stale === true);
+    for (let i = 0; i < 40 && requestsTo('/models') === calls; i++) await sleep(50);
+    ok('a stale catalog is refreshed in the background after answering', requestsTo('/models') === calls + 1);
+    await sleep(100);
+    ok('the background refresh renews the cache', openrouter.isStale(openrouter.loadCatalog(), 24) === false);
+
+    // ---- model selection ----------------------------------------------------------
+    const sess = await newSession(c);
+    const sid = sess.sessionId;
+    const sessionRuntime = lastRuntime();
+    const flagsOf = async (flags) => { c.send({ type: 'session.flags', id: 'sf', sessionId: sid, flags }); return await c.next((m) => m.type === 'session.flags' || m.type === 'session.error'); };
+    const picked = await flagsOf({ model: { provider: 'openai', model: 'gpt-test-1', effort: 'max' } });
+    ok('session.flags { model } echoes the normalized selection', picked.type === 'session.flags' && JSON.stringify(picked.flags.model) === JSON.stringify({ provider: 'OPENAI', model: 'gpt-test-1', effort: 'max' }));
+    ok('the pick becomes the remembered default', JSON.stringify(config.loadConfig().models.selected) === JSON.stringify({ provider: 'OPENAI', model: 'gpt-test-1', effort: 'max' }) && config.loadConfig().models.recent[0] === 'gpt-test-1');
+    await flagsOf({ model: { provider: 'OPENAI', model: 'gpt-test-2', effort: null } });
+    await flagsOf({ model: { provider: 'OPENAI', model: 'gpt-test-1', effort: null } });
+    ok('recent is newest first without duplicates', config.loadConfig().models.recent.slice(0, 3).join() === 'gpt-test-1,gpt-test-2,moonshotai/kimi-k3');
+    for (let i = 0; i < 9; i++) await flagsOf({ model: { provider: 'OPENAI', model: `bulk-${i}`, effort: null } });
+    ok('recent keeps the 8 newest', config.loadConfig().models.recent.length === 8 && config.loadConfig().models.recent[0] === 'bulk-8');
+    const listedAfter = await ask({ type: 'models.list', id: 'm7' }, 'models.result');
+    ok('models.list reports the remembered selection', listedAfter.selected && listedAfter.selected.model === 'bulk-8');
+    const cleared = await flagsOf({ model: null });
+    ok('model: null clears the session selection and the remembered one', cleared.flags.model === null && config.loadConfig().models.selected === null);
+    const sel = await flagsOf({ model: { provider: 'ANTHROPIC', model: 'claude-x', effort: null } });
+    ok('a provider without credentials is refused and nothing is remembered', sel.type === 'session.error' && sel.code === 'no_credentials' && config.loadConfig().models.selected === null);
+
+    // ---- keys.* -----------------------------------------------------------------------
+    const status = await ask({ type: 'keys.list', id: 'k1' }, 'keys.status');
+    ok('keys.list answers keys.status with one row per provider in the default order', status.id === 'k1' && status.providers.map((p) => p.provider).join() === 'OPENROUTER,ANTHROPIC,OPENAI,GROQ,LOCAL');
+    const rowOf = (message, provider) => message.providers.find((p) => p.provider === provider);
+    ok('a configured key is reported masked with its source', rowOf(status, 'OPENAI').configured === true && rowOf(status, 'OPENAI').masked === 'sk-tes…2345' && rowOf(status, 'OPENROUTER').configured === false && rowOf(status, 'OPENROUTER').masked === null);
+    ok('a key that came from the environment says so', rowOf(status, 'GROQ').source === 'env');
+
+    const set = await ask({ type: 'keys.set', id: 'k2', provider: 'openrouter', value: GOOD }, 'keys.status');
+    ok('keys.set answers keys.status with the key masked', set.type === 'keys.status' && set.id === 'k2' && rowOf(set, 'OPENROUTER').configured === true && rowOf(set, 'OPENROUTER').masked === 'sk-or-…3456' && rowOf(set, 'OPENROUTER').source === 'keys.json');
+    ok('the raw key never travels back', !JSON.stringify(set).includes(GOOD));
+    ok('the server keeps the key in the shared store (every session sees it)', sharedKeys.OPENROUTER_KEY === GOOD);
+    const keysFile = path.join(TMP_HOME, '.aicode', 'keys.json');
+    const stored = new EncryptedJsonDB('keys.json').load();
+    ok('the key is saved encrypted in keys.json', stored.OPENROUTER_KEY === GOOD && !fs.readFileSync(keysFile, 'utf8').includes(GOOD));
+    ok('keys that only came from the environment are not copied to disk', stored.GROQ_KEY === undefined && stored.OPENAI_KEY === undefined);
+    if (process.platform !== 'win32') ok('keys.json is readable by its owner only', (fs.statSync(keysFile).mode & 0o077) === 0);
+    const withKey = await ask({ type: 'models.list', id: 'm8' }, 'models.result');
+    ok('after the key is saved the OpenRouter models become available', withKey.models.filter((m) => m.provider === 'OPENROUTER').every((m) => m.available === true));
+
+    const emptyKey = await ask({ type: 'keys.set', id: 'k3', provider: 'openrouter', value: '   ' }, 'keys.status');
+    ok('an empty key -> error invalid_key (id echoed)', emptyKey.type === 'error' && emptyKey.code === 'invalid_key' && emptyKey.id === 'k3');
+    ok('a key of the wrong type -> error invalid_key', (await ask({ type: 'keys.set', provider: 'openrouter', value: 12345 }, 'keys.status')).code === 'invalid_key');
+    ok('an unknown provider -> error bad_request', (await ask({ type: 'keys.set', provider: 'nope', value: 'abc' }, 'keys.status')).code === 'bad_request');
+    ok('a LOCAL key needs a base URL and a model', (await ask({ type: 'keys.set', provider: 'local', value: 'http://localhost:11434/v1' }, 'keys.status')).code === 'invalid_key'
+        && (await ask({ type: 'keys.set', provider: 'local', value: { baseURL: 'ftp://nope', model: 'x' } }, 'keys.status')).code === 'invalid_key');
+    const local = await ask({ type: 'keys.set', provider: 'local', value: { baseURL: 'http://localhost:11434/v1', model: 'llama3' } }, 'keys.status');
+    ok('a LOCAL server is configured with { baseURL, model }', rowOf(local, 'LOCAL').configured === true && rowOf(local, 'LOCAL').masked === 'http://localhost:11434/v1' && sharedKeys.LOCAL_MODEL === 'llama3');
+    const unlocal = await ask({ type: 'keys.remove', provider: 'local' }, 'keys.status');
+    ok('keys.remove forgets the LOCAL server', rowOf(unlocal, 'LOCAL').configured === false && sharedKeys.LOCAL_BASE_URL === undefined);
+
+    // ---- keys.test -------------------------------------------------------------------------
+    const good = await ask({ type: 'keys.test', id: 't1', provider: 'openrouter' }, 'keys.testResult');
+    ok('keys.test OPENROUTER -> ok with the label and the credits left', good.id === 't1' && good.provider === 'OPENROUTER' && good.ok === true && good.detail === 'my-test-key · 8.50 credits left');
+    ok('the key is sent as a Bearer token', seen.filter((r) => r.url === '/key').pop().auth === `Bearer ${GOOD}`);
+    await ask({ type: 'keys.set', provider: 'openrouter', value: UNLIMITED }, 'keys.status');
+    ok('a key without a limit is reported as unlimited', (await ask({ type: 'keys.test', provider: 'openrouter' }, 'keys.testResult')).detail === 'free-spender · unlimited');
+    await ask({ type: 'keys.set', provider: 'openrouter', value: BAD }, 'keys.status');
+    const rejected = await ask({ type: 'keys.test', provider: 'openrouter' }, 'keys.testResult');
+    ok('keys.test OPENROUTER with a rejected key -> failed with "invalid key"', rejected.ok === false && rejected.detail === 'invalid key');
+    const unset = await ask({ type: 'keys.test', provider: 'anthropic' }, 'keys.testResult');
+    ok('keys.test of a provider without a key -> not configured', unset.ok === false && unset.detail === 'not configured');
+    ok('keys.test of an unknown provider -> error bad_request', (await ask({ type: 'keys.test', provider: 'nope' }, 'keys.testResult')).code === 'bad_request');
+
+    // ---- a removed key is noticed by the next turn -------------------------------------------
+    await ask({ type: 'keys.set', provider: 'openrouter', value: GOOD }, 'keys.status');
+    const orSelection = { provider: 'OPENROUTER', model: 'moonshotai/kimi-k3', effort: 'max' };
+    ok('an OpenRouter model can be picked once the key is stored', (await flagsOf({ model: orSelection })).flags.model.model === 'moonshotai/kimi-k3');
+    const ran = await turn(c, sid, 'hello');
+    ok('a turn runs while the selected provider has credentials', ran[ran.length - 1].type === 'session.done');
+    const removed = await ask({ type: 'keys.remove', id: 'k9', provider: 'openrouter' }, 'keys.status');
+    ok('keys.remove drops the key from memory and from keys.json', removed.id === 'k9' && rowOf(removed, 'OPENROUTER').configured === false && sharedKeys.OPENROUTER_KEY === undefined && new EncryptedJsonDB('keys.json').load().OPENROUTER_KEY === undefined);
+    const lost = await turn(c, sid, 'hello again');
+    const lostError = lost.find((m) => m.type === 'session.error');
+    ok('the next session.input -> session.error no_credentials without running a turn', lostError && lostError.code === 'no_credentials' && lostError.sessionId === sid && !lost.some((m) => m.type === 'session.done'));
+    ok('no turn was started for it', sessionRuntime.calls.length === 1 && sessionRuntime.calls[0].input === 'hello');
+    await flagsOf({ model: null });
+    const afterClear = await turn(c, sid, 'hello once more');
+    ok('clearing the selection lets the session run again', afterClear[afterClear.length - 1].type === 'session.done');
+
+    // ---- nothing secret ever came back ---------------------------------------------------------
+    const wire = JSON.stringify(c.inbox);
+    ok('no raw key appears in anything the server sent', [GOOD, UNLIMITED, BAD, SECRET, ENV_GROQ].every((value) => !wire.includes(value)));
+
+    await c.close();
+    await server.close();
+    stubApi.close();
+    delete process.env.AICODE_OPENROUTER_API;
+    delete process.env.GROQ_KEY;
+}
+
+// =============================================================================
+// [L] the real runtime behind the server (mock model, no network)
+// =============================================================================
+console.log('\n[L] real runtime end to end');
 {
     const Code2Prompt = require('../lib/engine');
     const models = require('../lib/models');

@@ -14,5 +14,9 @@
   "With --install-skill: install the skill globally (~/) instead of into the project": "Con --install-skill: instalar la skill de forma global (~/) en vez de en el proyecto",
   "Start the Agent Server only (for the IDE extension or other frontends)": "Iniciar solo el servidor de agente (para la extensión del IDE u otros frontends)",
   "Port to listen on (default: server.port in ~/.aicode/config.json; 0 picks a free port)": "Puerto en el que escuchar (por defecto: server.port de ~/.aicode/config.json; 0 elige uno libre)",
-  "Handshake token clients must send (default: a random one for this run)": "Token de conexión que deben enviar los clientes (por defecto: uno aleatorio para esta ejecución)"
+  "Handshake token clients must send (default: a random one for this run)": "Token de conexión que deben enviar los clientes (por defecto: uno aleatorio para esta ejecución)",
+  "Model for this run: [provider:]model[@effort], e.g. openrouter:anthropic/claude-sonnet-5.5@max or \"sonnet 5.5 max\"": "Modelo para esta ejecución: [proveedor:]modelo[@esfuerzo], p. ej. openrouter:anthropic/claude-sonnet-5.5@max o \"sonnet 5.5 max\"",
+  "List available models (OpenRouter catalog plus configured providers)": "Listar los modelos disponibles (catálogo de OpenRouter y proveedores configurados)",
+  "Refresh the OpenRouter model catalog": "Actualizar el catálogo de modelos de OpenRouter",
+  "Manage provider API keys: list, set, remove, test": "Gestionar las claves API de los proveedores: list, set, remove, test"
 }

@@ -42,6 +42,7 @@
     "@bacali/rtf-parser": "^1.0.1",
     "@clack/prompts": "^1.7.0",
     "@concepto/console": "^1.2.68",
+    "@openrouter/ai-sdk-provider": "^2.10.0",
     "@vitalets/google-translate-api": "^9.2.0",
     "ai": "^6.0.219",
     "cli-diagram": "^0.3.0",
