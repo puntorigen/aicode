@@ -44,5 +44,30 @@ console.log('\n[A] template loading race');
     fs.rmSync(project, { recursive: true, force: true });
 }
 
+// =============================================================================
+// Shell commands run in the context's directory, not in the process cwd
+// (the Agent Server serves several projects from one process)
+// =============================================================================
+console.log('\n[B] executeBash / spawnBash directory');
+{
+    const real = (p) => fs.realpathSync(p);
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-engine-cwd-a-'));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-engine-cwd-b-'));
+    const codeBlocks = new (require('../lib/codeBlocks'))();
+
+    const a = await codeBlocks.executeBash({ userDirectory: dirA }, 'pwd');
+    ok('executeBash runs in context.userDirectory', a.output.trim() === real(dirA));
+    const b = await codeBlocks.executeBash({ userDirectory: dirB }, 'pwd');
+    ok('a second context gets its own directory (no shared state)', b.output.trim() === real(dirB));
+    const fallback = await codeBlocks.executeBash({}, 'pwd');
+    ok('without a userDirectory it falls back to the process cwd', fallback.output.trim() === real(process.cwd()));
+
+    const spawned = await codeBlocks.spawnBash({ userDirectory: dirA }, 'pwd');
+    ok('spawnBash runs in context.userDirectory', spawned.trim() === real(dirA));
+
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+}
+
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');
 process.exit(failures ? 1 : 0);
