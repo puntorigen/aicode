@@ -777,14 +777,18 @@ The whole implementation lives on one feature branch and reaches `main` through 
 
 ### Continuous integration
 
-- **Data:** new file `.github/workflows/test.yml`, committed in Phase 0 (the repository has no CI today), with exactly this content:
+- **Data:** new file `.github/workflows/test.yml`, committed in Phase 0 (the repository has no CI today) and narrowed after Phase 5 so that it only runs for the final pull request (see `Behavior`), with exactly this content:
 
 ```yaml
 name: CI
 
+# The tests run for the final pull request, not for every push of the work in progress: while the
+# pull request is a draft the job below is skipped (no runner starts), and marking it ready for
+# review (`gh pr ready`) is what runs it. Until then the suite runs locally (`npm test`).
 on:
   pull_request:
     branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
   push:
     branches: [main]
 
@@ -798,6 +802,7 @@ concurrency:
 jobs:
   test:
     name: test (node ${{ matrix.node }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -819,7 +824,7 @@ jobs:
 ```
 
 - **Behavior:** `actions/checkout@v7` and `actions/setup-node@v7` are the current majors (verified 2026-10-17); Node `20` matches `engines.node >= 20` and `22` covers the optional `node:sqlite` path. `--if-present` lets the workflow pass before Phase 9 adds `build:ide`. The suite must stay runnable on a clean runner: no network beyond `npm ci` and the ripgrep package, no API keys, no global git identity (see `test/worktrees.test.mjs` in `## Verification`), temp `HOME`s for anything that touches `~/.aicode`.
-- The workflow becomes a required signal for the pull request: the executor runs `gh pr checks feature/aicode-ide --watch` after every push and fixes failures before moving to the next phase.
+- The CI is for the final pull request, not for the work in progress (the user's decision after Phase 5, to save time): the job is skipped while the pull request is a draft, `ready_for_review` is one of the triggers so `gh pr ready` starts it, pushes to a ready pull request run it again, and pushes to `main` run it once after the merge. Until then the executor runs the whole suite locally (`npm test`, already the condition of every commit) and does not wait for `gh pr checks` after a phase push; a skipped run on every draft push is expected and costs no runner time.
 
 ### Commits
 
@@ -850,7 +855,7 @@ jobs:
   `gh pr create --base main --head feature/aicode-ide --draft --title "feat: aicode IDE — embedded VS Code, agent server, modes, orvix navigation, OpenRouter models" --body-file /tmp/aicode-ide-pr.md`
   (the title is byte-exact; the body file is written by the executor from the template below). If `gh` is unavailable or not authenticated, print the compare URL `https://github.com/puntorigen/aicode/compare/main...feature/aicode-ide?expand=1` and continue.
 - After every later phase: push (`git push`), then update the body's phase checklist with `gh pr edit --body-file /tmp/aicode-ide-pr.md` (check the phase's box, add anything new under `## Behavior changes`).
-- After Phase 12, when every box is checked, `npm test` is green locally, and `gh pr checks feature/aicode-ide` reports the `CI` workflow green on the pushed head: `gh pr ready`. Merging, choosing squash vs. merge commit, and closing are the user's decisions; the executor never merges.
+- After Phase 12, when every box is checked and `npm test` is green locally (run twice): `gh pr ready`, which starts the CI that was skipped until then; then `gh pr checks feature/aicode-ide --watch`. A failure is fixed with a new commit (a push to a ready pull request runs the CI again) before the executor reports it is done. Merging, choosing squash vs. merge commit, and closing are the user's decisions; the executor never merges.
 - **Data:** body template (markdown; `[ ]` boxes are checked as phases land):
 
 ```markdown
@@ -876,7 +881,7 @@ Spec (source of truth): `docs/aicode-ide.spec.md` on this branch.
 - [ ] 12 Docs and locales
 
 ## How to test
-- CI (`.github/workflows/test.yml`) runs `npm ci`, `npm run build:ide --if-present` and `npm test` on Node 20 and 22.
+- CI (`.github/workflows/test.yml`) runs `npm ci`, `npm run build:ide --if-present` and `npm test` on Node 20 and 22 once the pull request is marked ready for review (it is skipped while the pull request is a draft); until then, `npm test` locally.
 - Locally: `npm install && npm test`
 - `aicode "what does this project do?"` (unchanged path)
 - `aicode keys set openrouter` then `aicode --model "sonnet 5.5 max" --mode ask "where is provider fallback implemented?"`
