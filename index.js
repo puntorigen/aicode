@@ -58,6 +58,21 @@ let argv = yargs(hideBin(process.argv))
         type: 'string',
       })
   })
+  .command('orvix [action] [args..]', __('Run orvix (semantic code index) commands for this project'), (yargs) => {
+    yargs
+      .positional('action', {
+        describe: 'status (default), index, init, gain, map, find, show, who-calls or calls',
+        type: 'string',
+      })
+      .positional('args', {
+        describe: 'what the orvix command takes: a symbol id or name, a query, ...',
+        type: 'string',
+      })
+      .option('agents', {
+        type: 'string',
+        description: __('With init: the agents to set up (cursor,claude,codex,gemini), instead of being asked'),
+      })
+  })
   .option('model', {
     type: 'string',
     description: __('Model for this run: [provider:]model[@effort], e.g. openrouter:anthropic/claude-sonnet-5.5@max or "sonnet 5.5 max"'),
@@ -219,6 +234,7 @@ const runServe = async () => {
                 flags: sessionFlags,
                 debug: extras.debug,
                 ide: extras.ide || null,
+                sessionId: extras.sessionId || null,
             }),
         });
     } catch (err) {
@@ -340,11 +356,66 @@ const runKeys = async () => {
     if (!res.ok) process.exitCode = 1;
 };
 
+// aicode orvix [status|index|init|gain|map|find|show|who-calls|calls] [args…]
+// `status` is aicode's own; every other command is orvix itself, run in this directory with the
+// terminal attached (so `aicode orvix show <id>` prints what `orvix show <id>` prints)
+const runOrvix = async () => {
+    const { createOrvix, AGENT_CHOICES } = require('./lib/orvix');
+    const orvix = createOrvix(currentWorkingDirectory);
+    const action = String(argv.action || 'status').toLowerCase();
+    const say = (line = '') => process.stdout.write(line + '\n');
+    const fail = (message) => { ui.error(new Error(message)); return 1; };
+
+    if (action === 'status') {
+        const status = orvix.status();
+        if (!status.enabled) {
+            say(`orvix is off for this project: ${orvix.reason}`);
+            return 0;
+        }
+        say(`orvix is active in ${currentWorkingDirectory}`);
+        say(`  symbols   ${status.symbols}${status.symbols === 0 ? '  (no index yet: it is built on the first agent run, or run "aicode orvix index")' : ''}`);
+        say(`  indexing  ${status.indexing ? 'yes' : 'no'}`);
+        say(`  changes   ${status.dirty ? 'pending (applied by the next query)' : 'none pending'}`);
+        return 0;
+    }
+
+    // everything after the "orvix" word, minus the option this command owns
+    const raw = hideBin(process.argv);
+    const tail = raw.slice(raw.indexOf('orvix') + 1);
+    const rest = [];
+    for (let i = 0; i < tail.length; i++) {
+        if (tail[i] === '--agents') { i++; continue; }
+        if (tail[i].startsWith('--agents=')) continue;
+        rest.push(tail[i]);
+    }
+
+    let args;
+    if (action === 'init') {
+        const names = String(argv.agents || '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean);
+        const unknown = names.filter((name) => !AGENT_CHOICES.includes(name));
+        if (unknown.length) return fail(`Unknown agent: ${unknown.join(', ')} (use ${AGENT_CHOICES.join(', ')}).`);
+        args = ['init', ...(names.length ? ['-a', ...names] : [])];
+    } else if (['index', 'gain', 'map', 'find', 'show', 'who-calls', 'calls'].includes(action)) {
+        const at = rest.indexOf(argv.action);
+        args = [action, ...rest.filter((_, i) => i !== at)];
+    } else {
+        return fail(`Unknown orvix command "${argv.action}". Use status, index, init, gain, map, find, show, who-calls or calls.`);
+    }
+    const code = await orvix.passthrough(args);
+    if (code === 127) return fail('Could not run orvix: is the orvix-cli package installed?');
+    return code;
+};
+
 // Process the input
 !(async () => {
     // these commands never run the interactive key prompts
     if (argv._[0] === 'serve') {
         await runServe();
+        return;
+    }
+    if (argv._[0] === 'orvix') {
+        process.exitCode = await runOrvix();
+        ui.dispose();
         return;
     }
     if (argv._[0] === 'models') {
@@ -482,6 +553,8 @@ const runKeys = async () => {
         // one-shot invocation
         ui.header({ name: 'aicode', version: require('./package.json').version, cwd: currentWorkingDirectory, provider: chip.provider, model: chip.model });
         await runtime.runPrompt(argv.input, ui);
+        // a code-index refresh that was waiting for its debounce starts now and outlives this process
+        runtime.orvix.flush();
         ui.dispose();
     } else if (!output_redirected && process.stdin.isTTY) {
         // no input + interactive terminal: open the TUI session
@@ -502,6 +575,15 @@ const runKeys = async () => {
             set: (provider, value) => keysLib.setKey(provider, value, db_keys_data),
             test: (provider) => keysLib.testKey(provider, db_keys_data),
         };
+        // /orvix: the code index of this project
+        const orvixApi = {
+            status: () => runtime.orvix.status(),
+            reason: () => runtime.orvix.reason,
+            index: () => runtime.orvix.indexNow(),
+            init: (agents) => runtime.orvix.init({ agents }),
+            gain: () => runtime.orvix.gain(),
+            agents: require('./lib/orvix').AGENT_CHOICES,
+        };
         try {
             const { startTui } = await import('./lib/tui/index.mjs');
             await startTui({
@@ -513,6 +595,7 @@ const runKeys = async () => {
                 actions: runtime.listActions(),
                 models: modelsApi,
                 keys: keysApi,
+                orvix: orvixApi,
                 listSkills: () => skills.discoverSkills(currentWorkingDirectory),
                 installSkill: (source, onOutput) => skills.installSkill(source, { onOutput }),
                 hasLocal: !!(db_keys_data.LOCAL_BASE_URL && db_keys_data.LOCAL_MODEL),

@@ -6,6 +6,7 @@ import { createRequire } from 'module';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 
 const require = createRequire(import.meta.url);
@@ -66,6 +67,7 @@ const ANALYSIS = {
 function makeMock({ analysis = {}, answer = 'Hello from the mock.', templateAnswer = 'TEMPLATE_ANSWER', failRouter = false } = {}) {
     const counts = { generate: 0, stream: 0, router: 0, template: 0 };
     const prompts = []; // the prompt of every streamed call (the agent loop's system prompt is in there)
+    const tools = []; // the tool names each streamed call was offered
     const model = new MockLanguageModelV3({
         doGenerate: async (options) => {
             counts.generate++;
@@ -81,6 +83,7 @@ function makeMock({ analysis = {}, answer = 'Hello from the mock.', templateAnsw
         doStream: async (options) => {
             counts.stream++;
             prompts.push(options.prompt);
+            tools.push((options.tools || []).map((t) => t.name));
             return {
                 stream: convertArrayToReadableStream([
                     { type: 'stream-start', warnings: [] },
@@ -93,7 +96,7 @@ function makeMock({ analysis = {}, answer = 'Hello from the mock.', templateAnsw
             };
         },
     });
-    return { model, counts, prompts };
+    return { model, counts, prompts, tools };
 }
 
 // a UI object recording everything the pipeline tells it
@@ -619,6 +622,108 @@ console.log('\n[J] project memory in agent turns');
     await rt.runPrompt('hello', makeUI());
     ok('the editor context is per turn: the next turn without one starts clean', !systemOf(m.prompts).includes('TS_STYLE_BODY_Z'));
     fs.rmSync(MEM, { recursive: true, force: true });
+}
+
+// =============================================================================
+// [K] the code index in turns: built on the first turn, used by the agent, shown as a step
+// =============================================================================
+console.log('\n[K] code index in turns');
+{
+    const savedFlag = process.env.AICODE_NO_ORVIX;
+    delete process.env.AICODE_NO_ORVIX; // test/run.mjs switches the layer off for the other files
+    const systemOf = (prompts, at = 0) => {
+        const msg = (prompts[at] || []).find((m) => m.role === 'system');
+        return msg ? String(msg.content) : '';
+    };
+    const repo = () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-rt-orvix-'));
+        execFileSync('git', ['init', '-q', '.'], { cwd: dir });
+        for (const n of ['alpha', 'beta', 'gamma']) fs.writeFileSync(path.join(dir, `${n}.js`), `export function ${n}() {\n  return 1;\n}\n`);
+        return dir;
+    };
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const INDEXING = 'indexing symbols (orvix)';
+    const NAV = ['code_map', 'find_symbol', 'show_symbol', 'who_calls', 'calls'];
+
+    const dir = repo();
+    const rt = createRuntime({ cwd: dir, keysData: { OPENAI_KEY: 'k' }, flags: { mode: 'agent' } });
+    ok('the runtime exposes the code index of its project', rt.orvix && rt.orvix.enabled === true && rt.orvix.root === dir);
+    ok('...which has no symbols before the first turn', rt.orvix.status().symbols === 0 && rt.orvix.status().indexing === false);
+
+    let m = makeMock();
+    MOCK = m.model;
+    let ui = makeUI();
+    await rt.runPrompt('hello', ui);
+    ok('the first turn builds the index and shows it as a step', has(ui, 'step', (e) => e[1] === INDEXING) && has(ui, 'step.done', (e) => e[1] === INDEXING && e[2] === '3 symbols'));
+    ok('...the agent already has the code map in this very turn', systemOf(m.prompts).includes('# Code map (orvix)') && systemOf(m.prompts).includes('function alpha()'));
+    ok('...the navigation policy', systemOf(m.prompts).includes('# Code navigation') && systemOf(m.prompts).includes('`find_symbol` locates a symbol'));
+    ok('...and the navigation tools', NAV.every((t) => m.tools[0].includes(t)));
+    ok('the index is on disk, out of git status', fs.existsSync(path.join(dir, '.orvix', 'symbols.json')) && execFileSync('git', ['status', '--porcelain', '-uall'], { cwd: dir, encoding: 'utf8' }).split('\n').every((l) => !l.includes('.orvix')));
+    ok('the status counts the symbols', rt.orvix.status().symbols === 3);
+
+    m = makeMock();
+    MOCK = m.model;
+    ui = makeUI();
+    await rt.runPrompt('hello again', ui);
+    ok('the next turn does not show an indexing step again', !has(ui, 'step', (e) => e[1] === INDEXING));
+    ok('...and the map is still in the prompt', systemOf(m.prompts).includes('# Code map (orvix)'));
+    await rt.orvix.settle(30000);
+
+    // a template-route turn does not wait for the build, and still closes its step
+    const dir2 = repo();
+    const rt2 = createRuntime({ cwd: dir2, keysData: { OPENAI_KEY: 'k' }, flags: { mode: 'auto' } });
+    m = makeMock({ analysis: { needs_agent: false } });
+    MOCK = m.model;
+    ui = makeUI();
+    await rt2.runPrompt('what is this?', ui);
+    ok('a turn that never reaches the agent still starts the index', has(ui, 'step', (e) => e[1] === INDEXING) && m.counts.stream === 0);
+    ok('...and its step does not stay open', has(ui, 'step.done', (e) => e[1] === INDEXING));
+    await rt2.orvix.settle(30000);
+    ok('...the index is built either way', fs.existsSync(path.join(dir2, '.orvix', 'symbols.json')) && rt2.orvix.status().symbols === 3);
+
+    // the step of a build that outlives the turn is detached, also when the turn fails
+    const detached = [];
+    const rt3 = createRuntime({ cwd: dir2, keysData: { OPENAI_KEY: 'k' }, flags: { mode: 'agent' } });
+    rt3.orvix.ensureIndex = async () => ({ enabled: true, building: true, symbols: 0, step: { detach: (note) => detached.push(note) } });
+    m = makeMock();
+    MOCK = m.model;
+    await rt3.runPrompt('hello', makeUI());
+    ok('a build still running at the end of the turn is detached from it', same(detached, ['continues in the background']));
+    m = makeMock({ failRouter: true });
+    MOCK = m.model;
+    await rt3.runPrompt('this will fail', makeUI());
+    ok('...also when the turn failed', same(detached, ['continues in the background', 'continues in the background']));
+    rt3.orvix.ensureIndex = async () => { throw new Error('boom'); };
+    const survived = await rt3.runPrompt('hello', makeUI());
+    ok('an index that cannot even start never breaks the turn', survived && typeof survived === 'object');
+
+    // switched off: no index, no tools, the basic policy
+    process.env.AICODE_NO_ORVIX = '1';
+    const dir3 = repo();
+    const rt4 = createRuntime({ cwd: dir3, keysData: { OPENAI_KEY: 'k' }, flags: { mode: 'agent' } });
+    m = makeMock();
+    MOCK = m.model;
+    ui = makeUI();
+    await rt4.runPrompt('hello', ui);
+    ok('with AICODE_NO_ORVIX the layer is off', rt4.orvix.enabled === false && !fs.existsSync(path.join(dir3, '.orvix')) && !has(ui, 'step', (e) => e[1] === INDEXING));
+    ok('...the agent keeps the file tree and the basic policy', systemOf(m.prompts).includes('Project source tree') && !systemOf(m.prompts).includes('# Code map') && systemOf(m.prompts).includes('The code index is not active in this session.'));
+    ok('...and has no navigation tools', NAV.every((t) => !m.tools[0].includes(t)) && m.tools[0].includes('read_file'));
+    delete process.env.AICODE_NO_ORVIX;
+
+    // the project snapshot every prompt reads from leaves out the repository and the index
+    const snapshot = await createRuntime({ cwd: dir, keysData: { OPENAI_KEY: 'k' } }).codePrompt(path.join(ROOT, 'actions', 'default.md')).traverseDirectory(dir);
+    ok('the snapshot carries the sources and neither .git nor .orvix', snapshot.filesArray.length === 3 && snapshot.filesArray.every((f) => /^(alpha|beta|gamma)\.js$/.test(f.path)));
+
+    // a project that is not a repository and has a few files: nothing is indexed
+    const plain = createRuntime({ cwd: PROJECT, keysData: { OPENAI_KEY: 'k' }, flags: { mode: 'agent' } });
+    m = makeMock();
+    MOCK = m.model;
+    ui = makeUI();
+    await plain.runPrompt('hello', ui);
+    ok('a small directory outside a repository is left alone', plain.orvix.enabled === false && !fs.existsSync(path.join(PROJECT, '.orvix')) && !has(ui, 'step', (e) => e[1] === INDEXING));
+
+    if (savedFlag === undefined) delete process.env.AICODE_NO_ORVIX; else process.env.AICODE_NO_ORVIX = savedFlag;
+    for (const d of [dir, dir2, dir3]) fs.rmSync(d, { recursive: true, force: true });
 }
 
 // cleanup

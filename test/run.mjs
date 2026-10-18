@@ -27,7 +27,9 @@ for (const file of files) {
     console.log(`\n===== ${file} =====`);
     const res = spawnSync(process.execPath, [path.join(testDir, file)], {
         cwd: root,
-        env: process.env,
+        // the code index (orvix) is off unless a test asks for it: no index is ever built for a test's
+        // project, or for this repository. test/orvix.test.mjs and runtime.test.mjs [K] switch it on.
+        env: { ...process.env, AICODE_NO_ORVIX: '1' },
         stdio: 'inherit',
     });
     if (res.status !== 0) {

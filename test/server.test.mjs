@@ -82,7 +82,7 @@ const types = (list) => list.map((m) => m.type);
 // -----------------------------------------------------------------------------
 const runtimes = [];
 const stub = { provider: { provider: 'stub', model: 'stub-1' } };
-const behavior = { run: null };
+const behavior = { run: null, orvix: null };
 const echo = async (input, ui) => {
     const step = ui.step('thinking');
     step.update('still thinking');
@@ -94,6 +94,7 @@ const echo = async (input, ui) => {
 const factory = (cwd, flags, extras) => {
     const rt = {
         cwd, flags, extras, calls: [],
+        ...(behavior.orvix ? { orvix: behavior.orvix } : {}),
         keysData: { OPENAI_KEY: SECRET, LOCAL_BASE_URL: '', LOCAL_MODEL: '' },
         describeProvider: () => stub.provider,
         usage: () => null,
@@ -827,9 +828,10 @@ console.log('\n[H] concurrent sessions');
     const answers = {};
     while (Object.keys(answers).length < 2) { const r = await c.next(type('ui.answer')); answers[r.sessionId] = r.text; }
     ok('each answer reaches the session that asked', answers[a.sessionId] === 'alpha got A-VALUE' && answers[b.sessionId] === 'beta got B-VALUE');
-    const finished = [];
-    while (finished.length < 2) finished.push((await c.next(type('session.done'))).sessionId);
-    ok('both turns end', finished.includes(a.sessionId) && finished.includes(b.sessionId));
+    // (a turn may end before the other session's answer arrives: look at the whole inbox, not past the cursor)
+    const doneSessions = () => new Set(c.inbox.filter(type('session.done')).map((m) => m.sessionId));
+    for (let i = 0; i < 200 && doneSessions().size < 2; i++) await sleep(25);
+    ok('both turns end', doneSessions().has(a.sessionId) && doneSessions().has(b.sessionId));
     behavior.run = null;
     await c.close();
     await server.close();
@@ -1160,6 +1162,145 @@ console.log('\n[L] real runtime end to end');
 
     await c.close();
     await server.close();
+}
+
+// =============================================================================
+// [M] the code index over the wire (a fake orvix: no indexing happens here)
+// =============================================================================
+console.log('\n[M] orvix: session status, orvix.status pushes, orvix.command');
+{
+    const { orvixView } = require('../lib/server/sessions');
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    function fakeOrvix({ enabled = true, symbols = 7, reason = null } = {}) {
+        const listeners = new Set();
+        const o = {
+            enabled, reason, symbols, indexing: false, dirty: false, calls: [],
+            status: () => ({ enabled: o.enabled, symbols: o.symbols, indexing: o.indexing, dirty: o.dirty }),
+            onStatus: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+            listenerCount: () => listeners.size,
+            emit: () => { for (const fn of [...listeners]) fn(o.status()); },
+            ensureIndex: async () => { o.calls.push('ensureIndex'); return { enabled: o.enabled, building: false, symbols: o.symbols, step: null }; },
+            indexNow: async () => {
+                o.calls.push('indexNow');
+                o.indexing = true; o.emit();
+                await sleep(20);
+                o.indexing = false; o.symbols += 2; o.emit();
+                return { ok: true, summary: { files: 3, symbols: o.symbols, added: 1, updated: 0, removed: 0 }, symbols: o.symbols };
+            },
+            init: async ({ agents } = {}) => { o.calls.push(['init', agents]); return { ok: true, code: 0, output: 'wrote AGENTS.md' }; },
+            gain: async () => ({ compressions: 2, before: 1000, after: 400, saved: 600, ratio: 0.6 }),
+        };
+        return o;
+    }
+
+    ok('the view of a runtime without a code index is "off"', same(orvixView(undefined), { enabled: false, symbols: 0, indexing: false }) && same(orvixView({}), { enabled: false, symbols: 0, indexing: false }));
+    ok('...a status that throws is "off" too', same(orvixView({ status: () => { throw new Error('x'); } }), { enabled: false, symbols: 0, indexing: false }));
+    ok('the view keeps only enabled, symbols and indexing', same(orvixView(fakeOrvix()), { enabled: true, symbols: 7, indexing: false }));
+
+    const fake = fakeOrvix();
+    behavior.orvix = fake;
+    const server = await start();
+    const c = await login(server);
+    const created = await newSession(c);
+    behavior.orvix = null;
+    ok('session.created carries the status of the code index', same(created.orvix, { enabled: true, symbols: 7, indexing: false }));
+    ok('...creating a session makes sure the project has an index', fake.calls.includes('ensureIndex') && fake.listenerCount() === 1);
+    const sid = created.sessionId;
+
+    fake.indexing = true; fake.emit();
+    const push = await c.next(type('orvix.status'));
+    ok('a status change is pushed to the client', same(push, { type: 'orvix.status', sessionId: sid, enabled: true, symbols: 7, indexing: true }));
+    ok('...without internals (no dirty flag, no reason)', !('dirty' in push) && !('reason' in push) && !('id' in push));
+    fake.indexing = false; fake.symbols = 11; fake.emit();
+    ok('...and the next one', (await c.next(type('orvix.status'))).symbols === 11 && fake.indexing === false);
+    fake.symbols = 7;
+
+    c.send({ type: 'orvix.command', id: 'q1', sessionId: sid, command: 'status' });
+    const status = await c.next((m) => m.id === 'q1');
+    ok('orvix.command status answers with the status and echoes the id', status.type === 'orvix.status' && status.sessionId === sid && status.enabled === true && status.symbols === 7 && !('output' in status));
+
+    c.send({ type: 'orvix.command', id: 'q2', sessionId: sid, command: 'index' });
+    const indexRun = await c.until((m) => m.id === 'q2');
+    ok('orvix.command index runs an index pass and streams the status while it works', indexRun.filter(type('orvix.status')).length === 3 && indexRun[0].indexing === true && indexRun[1].indexing === false);
+    const indexed = indexRun[indexRun.length - 1];
+    ok('...and answers with what it did', indexed.output === '3 files, 9 symbols (1 added, 0 updated, 0 removed)' && indexed.symbols === 9 && indexed.indexing === false && fake.calls.includes('indexNow'));
+
+    c.send({ type: 'orvix.command', id: 'q3', sessionId: sid, command: 'gain' });
+    const gain = await c.next((m) => m.id === 'q3');
+    ok('orvix.command gain reports the savings', gain.type === 'orvix.status' && gain.saved === 600 && gain.output === '2 compressions, 600 tokens saved (1000 → 400)');
+
+    c.send({ type: 'orvix.command', id: 'q4', sessionId: sid, command: 'init', agents: ['Claude', ' codex '] });
+    const init = await c.next((m) => m.id === 'q4');
+    ok('orvix.command init passes the agents (normalized) and returns orvix\'s output', init.output === 'wrote AGENTS.md' && same(fake.calls[fake.calls.length - 1], ['init', ['claude', 'codex']]));
+    c.send({ type: 'orvix.command', id: 'q5', sessionId: sid, command: 'init' });
+    await c.next((m) => m.id === 'q5');
+    ok('...with no agents orvix decides', same(fake.calls[fake.calls.length - 1], ['init', []]));
+
+    const refused = async (message) => { c.send({ type: 'orvix.command', sessionId: sid, ...message }); return await c.next((m) => m.type === 'session.error' || m.type === 'error'); };
+    const before = fake.calls.length;
+    let err = await refused({ command: 'rm -rf' });
+    ok('an unknown command is refused (bad_request, with the session)', err.type === 'session.error' && err.code === 'bad_request' && err.sessionId === sid && /status, index, init, gain/.test(err.message));
+    err = await refused({});
+    ok('a missing command is refused', err.code === 'bad_request');
+    err = await refused({ command: 'init', agents: 'claude' });
+    ok('init agents must be an array', err.code === 'bad_request' && /array of strings/.test(err.message));
+    err = await refused({ command: 'init', agents: [1] });
+    ok('...of strings', err.code === 'bad_request');
+    err = await refused({ command: 'init', agents: ['claude', 'vim'] });
+    ok('an unknown agent is refused before orvix runs', err.code === 'bad_request' && /unknown agent: vim/.test(err.message) && fake.calls.length === before);
+    c.send({ type: 'orvix.command', sessionId: 'no-such-session', command: 'status' });
+    err = await c.next((m) => m.type === 'session.error' || m.type === 'error');
+    ok('a session that does not exist is not_found', err.code === 'not_found');
+
+    // a connection that does not own the session cannot drive its index
+    const intruder = await login(server, 'intruder');
+    intruder.send({ type: 'orvix.command', sessionId: sid, command: 'index' });
+    ok('another connection cannot run orvix.command on it', (await intruder.next((m) => m.type === 'session.error' || m.type === 'error')).code === 'not_found' && !fake.calls.slice(before).includes('indexNow'));
+    await intruder.close();
+
+    // resuming reports the status too
+    await c.close();
+    await sleep(30);
+    const c2 = await login(server);
+    c2.send({ type: 'session.resume', sessionId: sid });
+    const resumed = await c2.next((m) => m.type === 'session.resumed' || m.type === 'error');
+    ok('session.resumed carries the status of the code index', resumed.type === 'session.resumed' && same(resumed.orvix, { enabled: true, symbols: 9, indexing: false }));
+
+    // the stream stops when the session is gone
+    await c2.close();
+    await server.close();
+    ok('the status stream ends with the session (no listener is left behind)', fake.listenerCount() === 0);
+
+    // a project where the layer is off, and a runtime without one
+    const off = fakeOrvix({ enabled: false, symbols: 0, reason: 'not a git repository and fewer than 5 source files' });
+    behavior.orvix = off;
+    const server2 = await start();
+    const d = await login(server2);
+    const offSession = await newSession(d);
+    behavior.orvix = null;
+    ok('a disabled index is reported off and is not asked to build', offSession.orvix.enabled === false && !off.calls.includes('ensureIndex') && off.listenerCount() === 0);
+    d.send({ type: 'orvix.command', id: 'o1', sessionId: offSession.sessionId, command: 'status' });
+    const offStatus = await d.next((m) => m.id === 'o1');
+    ok('orvix.command status says why it is off', offStatus.enabled === false && offStatus.output === 'the code index is off for this project: not a git repository and fewer than 5 source files');
+    d.send({ type: 'orvix.command', id: 'o2', sessionId: offSession.sessionId, command: 'index' });
+    ok('...and index does nothing', (await d.next((m) => m.id === 'o2')).output.startsWith('the code index is off for this project') && !off.calls.includes('indexNow'));
+    const bare = await newSession(d);
+    d.send({ type: 'orvix.command', id: 'o3', sessionId: bare.sessionId, command: 'gain' });
+    ok('a runtime without a code index says so', (await d.next((m) => m.id === 'o3')).output === 'the code index is not available in this session' && same(bare.orvix, { enabled: false, symbols: 0, indexing: false }));
+    await d.close();
+    await server2.close();
+
+    // an index that cannot start must not break session creation
+    const broken = fakeOrvix();
+    broken.ensureIndex = async () => { throw new Error('cannot start'); };
+    behavior.orvix = broken;
+    const server3 = await start();
+    const e = await login(server3);
+    const survivor = await newSession(e);
+    behavior.orvix = null;
+    ok('a session is still created when the index cannot start', survivor.type === 'session.created' && survivor.orvix.enabled === true);
+    await e.close();
+    await server3.close();
 }
 
 fs.rmSync(TMP_HOME, { recursive: true, force: true });

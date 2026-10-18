@@ -18,5 +18,7 @@
   "Model for this run: [provider:]model[@effort], e.g. openrouter:anthropic/claude-sonnet-5.5@max or \"sonnet 5.5 max\"": "Modelo para esta ejecución: [proveedor:]modelo[@esfuerzo], p. ej. openrouter:anthropic/claude-sonnet-5.5@max o \"sonnet 5.5 max\"",
   "List available models (OpenRouter catalog plus configured providers)": "Listar los modelos disponibles (catálogo de OpenRouter y proveedores configurados)",
   "Refresh the OpenRouter model catalog": "Actualizar el catálogo de modelos de OpenRouter",
-  "Manage provider API keys: list, set, remove, test": "Gestionar las claves API de los proveedores: list, set, remove, test"
+  "Manage provider API keys: list, set, remove, test": "Gestionar las claves API de los proveedores: list, set, remove, test",
+  "Run orvix (semantic code index) commands for this project": "Ejecutar comandos de orvix (índice semántico del código) en este proyecto",
+  "With init: the agents to set up (cursor,claude,codex,gemini), instead of being asked": "Con init: los agentes a configurar (cursor,claude,codex,gemini), en vez de preguntar"
 }
