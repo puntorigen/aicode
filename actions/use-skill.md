@@ -1,5 +1,5 @@
 ```description
-Runs an installed Agent Skill (a SKILL.md from skills.sh / .agents/skills) to fulfill the user's request. Chosen when the user asks to use a specific skill, or when an installed skill's description matches the request better than any other action.
+Runs an installed Agent Skill (a SKILL.md from skills.sh, .agents/skills or .cursor/skills) to fulfill the user's request. Chosen when the user asks to use a specific skill, or when an installed skill's description matches the request better than any other action.
 ```
 
 ```js:pre

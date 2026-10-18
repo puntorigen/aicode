@@ -1423,7 +1423,6 @@ console.log('\n[N] plans: plan.created / plan.implement / catalog.get');
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-srv-plans-bare-'));
     c.send({ type: 'catalog.get', id: 'k4', kind: 'plans', cwd: bare });
     ok('a project without plans lists none', same((await c.next((m) => m.id === 'k4')).items, []));
-    fs.rmSync(bare, { recursive: true, force: true });
 
     // catalog.get: rules
     put(path.join(project, '.cursor', 'rules', 'style.mdc'), '---\ndescription: Code style for the web app\nglobs: src/**/*.ts\nalwaysApply: false\n---\nUse tabs.\n');
@@ -1440,10 +1439,35 @@ console.log('\n[N] plans: plan.created / plan.implement / catalog.get');
     c.send({ type: 'catalog.get', id: 'r3', kind: 'rules', cwd: project, query: 'tabs' });
     ok('...but not the text of the rule', (await c.next((m) => m.id === 'r3')).items.length === 0);
 
+    // catalog.get: skills (the project's, the user's, Cursor's), by name
+    const skillFile = (root, name, description) => put(path.join(root, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\nDo the SKILL_BODY_TEXT.\n`);
+    skillFile(path.join(project, '.cursor', 'skills'), 'zebra', 'Draws stripes for the web');
+    skillFile(path.join(project, '.agents', 'skills'), 'pdf-tool', 'Read and merge PDF files');
+    skillFile(path.join(TMP_HOME, '.cursor', 'skills'), 'Deploy', 'Ship the app to staging');
+    skillFile(path.join(project, '.agents', 'skills'), 'Zulu', 'A capital letter first: it sorts with the z\'s');
+    skillFile(path.join(TMP_HOME, '.cursor', 'skills-cursor'), 'canvas', 'Cursor canvas, which needs Cursor');
+    require('../lib/skills').clearCache();
+    c.send({ type: 'catalog.get', id: 's1', kind: 'skills', cwd: project });
+    const skillList = await c.next((m) => m.id === 's1');
+    ok('catalog.get skills lists the installed skills by name, not in the order of the directories', skillList.type === 'catalog.result' && skillList.kind === 'skills' && same(skillList.items.map((i) => i.name), ['Deploy', 'pdf-tool', 'zebra', 'Zulu']));
+    ok('...each with where it comes from', same(skillList.items.map((i) => i.origin), ['cursor-user', 'project', 'cursor-project', 'project']));
+    const zebra = skillList.items.find((i) => i.name === 'zebra');
+    ok('...its description and its SKILL.md: relative inside the project, absolute outside it', zebra.description === 'Draws stripes for the web' && zebra.file === '.cursor/skills/zebra/SKILL.md' && skillList.items.find((i) => i.name === 'Deploy').file === path.join(TMP_HOME, '.cursor', 'skills', 'Deploy', 'SKILL.md'));
+    ok('...and nothing else: no instructions, no folder', same(Object.keys(zebra).sort(), ['description', 'file', 'name', 'origin']) && !JSON.stringify(skillList).includes('SKILL_BODY_TEXT'));
+    ok('...a skill on the deny-list (one that needs Cursor) is not offered', !skillList.items.some((i) => i.name === 'canvas'));
+    c.send({ type: 'catalog.get', id: 's2', kind: 'skills', cwd: project, query: 'STRIPES web' });
+    ok('...a query keeps those with every word in the name or description, in any case', (await c.next((m) => m.id === 's2')).items.map((i) => i.name).join() === 'zebra');
+    c.send({ type: 'catalog.get', id: 's3', kind: 'skills', cwd: project, query: 'deploy' });
+    ok('...also in the name', (await c.next((m) => m.id === 's3')).items.map((i) => i.name).join() === 'Deploy');
+    c.send({ type: 'catalog.get', id: 's4', kind: 'skills', cwd: project, query: 'SKILL_BODY_TEXT' });
+    ok('...but not in the instructions', (await c.next((m) => m.id === 's4')).items.length === 0);
+    c.send({ type: 'catalog.get', id: 's5', kind: 'skills', cwd: bare });
+    ok('a project without skills still lists the user\'s', (await c.next((m) => m.id === 's5')).items.map((i) => i.name).join() === 'Deploy');
+
     // catalog.get: what it refuses
     const asked = async (message) => { c.send({ type: 'catalog.get', ...message }); return await c.next((m) => m.type === 'error' || m.type === 'session.error' || m.type === 'catalog.result'); };
     err = await asked({ id: 'e1', kind: 'bogus', cwd: project });
-    ok('an unknown kind is bad_request and lists the available ones', err.type === 'error' && err.code === 'bad_request' && /unknown catalog kind: bogus\. Available: plans, rules/.test(err.message));
+    ok('an unknown kind is bad_request and lists the available ones', err.type === 'error' && err.code === 'bad_request' && err.message === 'unknown catalog kind: bogus. Available: plans, rules, skills');
     err = await asked({ id: 'e2', cwd: project });
     ok('a missing kind too', err.code === 'bad_request' && /\(missing\)/.test(err.message));
     err = await asked({ id: 'e3', kind: 'toString', cwd: project });
@@ -1463,6 +1487,7 @@ console.log('\n[N] plans: plan.created / plan.implement / catalog.get');
     await server.close();
     fs.rmSync(project, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
+    fs.rmSync(bare, { recursive: true, force: true });
 }
 
 fs.rmSync(TMP_HOME, { recursive: true, force: true });

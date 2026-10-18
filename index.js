@@ -639,7 +639,7 @@ const runOrvix = async () => {
                 models: modelsApi,
                 keys: keysApi,
                 orvix: orvixApi,
-                listSkills: () => skills.discoverSkills(currentWorkingDirectory),
+                listSkills: () => skills.discoverSkills(currentWorkingDirectory, { fresh: true }),
                 installSkill: (source, onOutput) => skills.installSkill(source, { onOutput }),
                 hasLocal: !!(db_keys_data.LOCAL_BASE_URL && db_keys_data.LOCAL_MODEL),
                 setLocal: (on) => { flags.local = !!on; },
