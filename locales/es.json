@@ -20,5 +20,7 @@
   "Refresh the OpenRouter model catalog": "Actualizar el catálogo de modelos de OpenRouter",
   "Manage provider API keys: list, set, remove, test": "Gestionar las claves API de los proveedores: list, set, remove, test",
   "Run orvix (semantic code index) commands for this project": "Ejecutar comandos de orvix (índice semántico del código) en este proyecto",
-  "With init: the agents to set up (cursor,claude,codex,gemini), instead of being asked": "Con init: los agentes a configurar (cursor,claude,codex,gemini), en vez de preguntar"
+  "With init: the agents to set up (cursor,claude,codex,gemini), instead of being asked": "Con init: los agentes a configurar (cursor,claude,codex,gemini), en vez de preguntar",
+  "Interaction mode: auto, agent, plan or ask": "Modo de interacción: auto, agent, plan o ask",
+  "Implement a plan file in agent mode": "Implementar un archivo de plan en modo agent"
 }

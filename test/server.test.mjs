@@ -1303,6 +1303,168 @@ console.log('\n[M] orvix: session status, orvix.status pushes, orvix.command');
     await server3.close();
 }
 
+// =============================================================================
+// [N] plans over the wire: plan.created, plan.implement, catalog.get
+// =============================================================================
+console.log('\n[N] plans: plan.created / plan.implement / catalog.get');
+{
+    const planLib = require('../lib/plans');
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-srv-plans-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-srv-plans-outside-'));
+    const rel = '.aicode/plans/ship-it.plan.md';
+    const put = (where, text) => { fs.mkdirSync(path.dirname(where), { recursive: true }); fs.writeFileSync(where, text); };
+    const TODOS = [{ id: 'a', content: 'First', status: 'pending' }, { id: 'b', content: 'Second', status: 'completed' }];
+    put(path.join(project, rel), planLib.renderPlan({ title: 'Ship it', overview: 'Get it out.', markdown: '# Ship it\n\nDo the thing.\n', todos: TODOS }));
+    const planText = fs.readFileSync(path.join(project, rel), 'utf8');
+    fs.utimesSync(path.join(project, rel), new Date('2023-05-06T07:08:09Z'), new Date('2023-05-06T07:08:09Z'));
+
+    const server = await start();
+    const c = await login(server);
+    const s = await newSession(c, undefined, project);
+    const sid = s.sessionId;
+    const rt = lastRuntime();
+    const refused = async (message) => { c.send({ sessionId: sid, ...message }); return await c.next((m) => m.type === 'session.error' || m.type === 'error'); };
+
+    // plan.created: what the write_plan tool tells the UI
+    behavior.run = async (input, ui) => { ui.planCreated({ path: rel, title: 'Ship it', overview: 'Get it out.', todos: [{ id: 'a', content: 'First', status: 'pending' }] }); return USAGE; };
+    let events = await turn(c, sid, 'plan something');
+    const created = events.find(type('plan.created'));
+    ok('plan.created carries the file, title, overview and todos', created && created.sessionId === sid && created.path === rel && created.title === 'Ship it' && created.overview === 'Get it out.' && same(created.todos, [{ id: 'a', content: 'First', status: 'pending' }]));
+    ok('...before the turn ends', types(events).indexOf('plan.created') < types(events).indexOf('session.done'));
+    behavior.run = async (input, ui) => { ui.planCreated({ path: `.aicode/plans/${SECRET}.plan.md`, title: `T ${SECRET}`, overview: `O ${SECRET}`, todos: [{ id: 'a', content: `C ${SECRET}`, status: 'pending' }] }); return USAGE; };
+    events = await turn(c, sid, 'plan with a key in it');
+    const masked = events.find(type('plan.created'));
+    ok('a key that ends up in a plan is masked in every field', masked && !JSON.stringify(masked).includes(SECRET) && masked.title.includes('***') && masked.overview.includes('***') && masked.path.includes('***') && masked.todos[0].content.includes('***'));
+    behavior.run = async (input, ui) => { ui.planCreated(); return USAGE; };
+    events = await turn(c, sid, 'a plan with nothing in it');
+    const empty = events.find(type('plan.created'));
+    ok('a plan.created with no details is still well-formed', empty && empty.path === '' && empty.title === '' && empty.overview === '' && same(empty.todos, []));
+    behavior.run = null;
+
+    // plan.implement: a turn in Agent mode whose input is the plan file, exactly
+    const lastCall = () => rt.calls[rt.calls.length - 1];
+    c.send({ type: 'plan.implement', id: 'p1', sessionId: sid, path: rel });
+    events = await c.until(type('session.done'));
+    const text = planLib.implementText(rel, planText);
+    ok('plan.implement runs the plan file as the input of a turn', lastCall().input === text && text.startsWith(`Implement the plan at ${rel}. `) && text.endsWith(planText));
+    ok('...in agent mode, on the text exactly as written', lastCall().opts.modeOverride === 'agent' && lastCall().opts.verbatim === true && lastCall().opts.sessionId === sid);
+    ok('...and answers like a turn: events, then session.done echoing the id', events[events.length - 1].type === 'session.done' && events[events.length - 1].id === 'p1' && events.some(type('ui.stream.end')));
+    ok('...the turn is remembered with the plan as the user message', readJsonl(sessionFile(sid, project)).some((l) => l.role === 'user' && l.message.content[0].text === text));
+    await turn(c, sid, 'and then?');
+    ok('a normal input after it carries neither override', !('modeOverride' in lastCall().opts) && !('verbatim' in lastCall().opts) && lastCall().opts.history[0].content === text);
+
+    put(path.join(project, 'docs', 'design.md'), '# A design\n\nBuild it.\n');
+    const absolute = path.join(project, rel);
+    c.send({ type: 'plan.implement', sessionId: sid, path: absolute });
+    await c.until(type('session.done'));
+    ok('an absolute path inside the project works, and the text names it relative', lastCall().input === text);
+    c.send({ type: 'plan.implement', sessionId: sid, path: 'docs/design.md' });
+    await c.until(type('session.done'));
+    ok('any file of the project can be implemented, not only .aicode/plans', lastCall().input === planLib.implementText('docs/design.md', '# A design\n\nBuild it.\n'));
+
+    const calls = rt.calls.length;
+    let err = await refused({ type: 'plan.implement' });
+    ok('plan.implement needs a path', err.type === 'session.error' && err.code === 'bad_request' && err.sessionId === sid && /plan file to implement/.test(err.message));
+    err = await refused({ type: 'plan.implement', path: 7 });
+    ok('...a string', err.code === 'bad_request' && /plan file to implement/.test(err.message));
+    err = await refused({ type: 'plan.implement', path: '   ' });
+    ok('...not blank', err.code === 'bad_request');
+    err = await refused({ type: 'plan.implement', path: 'nope.plan.md' });
+    ok('a plan that is not there is bad_request with the reason', err.code === 'bad_request' && err.message === 'plan not found: nope.plan.md');
+    err = await refused({ type: 'plan.implement', path: '.aicode' });
+    ok('a directory is refused', err.code === 'bad_request' && err.message === 'not a file: .aicode');
+    put(path.join(outside, 'elsewhere.plan.md'), '# Not yours\n');
+    err = await refused({ type: 'plan.implement', path: path.join(outside, 'elsewhere.plan.md') });
+    ok('a file outside the project is refused (the path comes from a client)', err.code === 'bad_request' && /the plan must be inside the project/.test(err.message));
+    err = await refused({ type: 'plan.implement', path: `../${path.basename(outside)}/elsewhere.plan.md` });
+    ok('...also through ..', err.code === 'bad_request' && /the plan must be inside the project/.test(err.message));
+    fs.symlinkSync(path.join(outside, 'elsewhere.plan.md'), path.join(project, 'docs', 'link.plan.md'));
+    err = await refused({ type: 'plan.implement', path: 'docs/link.plan.md' });
+    ok('...and through a link out of it', err.code === 'bad_request' && /the plan must be inside the project/.test(err.message));
+    put(path.join(project, 'docs', 'huge.plan.md'), 'x'.repeat(planLib.MAX_PLAN_BYTES + 1));
+    err = await refused({ type: 'plan.implement', path: 'docs/huge.plan.md' });
+    ok('a plan too large to implement says so', err.code === 'bad_request' && /the plan is too large to implement \(\d+ KB, the limit is 100 KB\)/.test(err.message));
+    ok('none of the refusals ran a turn', rt.calls.length === calls);
+    c.send({ type: 'plan.implement', sessionId: 'no-such-session', path: rel });
+    ok('a session that does not exist is not_found', (await c.next((m) => m.type === 'session.error' || m.type === 'error')).code === 'not_found');
+    const intruder = await login(server, 'intruder');
+    intruder.send({ type: 'plan.implement', sessionId: sid, path: rel });
+    ok('another connection cannot implement into the session', (await intruder.next((m) => m.type === 'session.error' || m.type === 'error')).code === 'not_found' && rt.calls.length === calls);
+    await intruder.close();
+
+    // not while a turn is running, and not with nothing to run it
+    let release;
+    behavior.run = async () => { await new Promise((resolve) => { release = resolve; }); return USAGE; };
+    c.send({ type: 'session.input', sessionId: sid, text: 'long running' });
+    await sleep(50);
+    err = await refused({ type: 'plan.implement', path: rel });
+    ok('plan.implement while a turn runs -> busy', err.code === 'busy' && err.sessionId === sid);
+    release();
+    await c.next(type('session.done'));
+    behavior.run = null;
+    const unconfigured = await newSession(c, undefined, project);
+    stub.provider = { provider: '', model: '' };
+    c.send({ type: 'plan.implement', sessionId: unconfigured.sessionId, path: rel });
+    err = await c.next((m) => m.type === 'session.error' || m.type === 'error');
+    stub.provider = { provider: 'stub', model: 'stub-1' };
+    ok('with no provider configured -> no_provider, nothing runs', err.code === 'no_provider' && lastRuntime().calls.length === 0);
+
+    // catalog.get: plans
+    c.send({ type: 'catalog.get', id: 'k1', kind: 'plans', cwd: project });
+    const listed = await c.next((m) => m.id === 'k1');
+    ok('catalog.get plans lists the plan files with their todos, newest first (id echoed)', listed.type === 'catalog.result' && listed.kind === 'plans' && listed.items.length >= 1);
+    const item = listed.items.find((i) => i.path === rel);
+    ok('...each with path, title, overview, todos and when it was changed', item && item.title === 'Ship it' && item.overview === 'Get it out.' && same(item.todos, TODOS) && item.updatedAt === '2023-05-06T07:08:09.000Z' && same(Object.keys(item).sort(), ['overview', 'path', 'title', 'todos', 'updatedAt']));
+    c.send({ type: 'catalog.get', id: 'k2', kind: 'plans', cwd: project, query: 'SHIP get' });
+    ok('...a query keeps those with every word, in any case', (await c.next((m) => m.id === 'k2')).items.map((i) => i.path).join() === rel);
+    c.send({ type: 'catalog.get', id: 'k3', kind: 'plans', cwd: project, query: 'ship unrelated' });
+    ok('...and none when a word is missing', (await c.next((m) => m.id === 'k3')).items.length === 0);
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'aicode-srv-plans-bare-'));
+    c.send({ type: 'catalog.get', id: 'k4', kind: 'plans', cwd: bare });
+    ok('a project without plans lists none', same((await c.next((m) => m.id === 'k4')).items, []));
+    fs.rmSync(bare, { recursive: true, force: true });
+
+    // catalog.get: rules
+    put(path.join(project, '.cursor', 'rules', 'style.mdc'), '---\ndescription: Code style for the web app\nglobs: src/**/*.ts\nalwaysApply: false\n---\nUse tabs.\n');
+    put(path.join(project, '.cursor', 'rules', 'always.mdc'), '---\ndescription: House rules\nalwaysApply: true\n---\nBe kind.\n');
+    c.send({ type: 'catalog.get', id: 'r1', kind: 'rules', cwd: project });
+    const rules = await c.next((m) => m.id === 'r1');
+    ok('catalog.get rules lists the project rules', rules.type === 'catalog.result' && rules.kind === 'rules' && same(rules.items.map((i) => i.name), ['always', 'style']));
+    const style = rules.items.find((i) => i.name === 'style');
+    ok('...with description, globs, alwaysApply and the file, and without the rule text', style.description === 'Code style for the web app' && same(style.globs, ['src/**/*.ts']) && style.alwaysApply === false && style.file === '.cursor/rules/style.mdc' && !('body' in style) && rules.items.find((i) => i.name === 'always').alwaysApply === true);
+    c.send({ type: 'catalog.get', id: 'r2', kind: 'rules', cwd: project, query: 'WEB style' });
+    ok('...a query matches name and description', (await c.next((m) => m.id === 'r2')).items.map((i) => i.name).join() === 'style');
+    c.send({ type: 'catalog.get', id: 'r2b', kind: 'rules', cwd: project, query: 'house RULES' });
+    ok('...whatever the case of the query or of the description ("House rules")', (await c.next((m) => m.id === 'r2b')).items.map((i) => i.name).join() === 'always');
+    c.send({ type: 'catalog.get', id: 'r3', kind: 'rules', cwd: project, query: 'tabs' });
+    ok('...but not the text of the rule', (await c.next((m) => m.id === 'r3')).items.length === 0);
+
+    // catalog.get: what it refuses
+    const asked = async (message) => { c.send({ type: 'catalog.get', ...message }); return await c.next((m) => m.type === 'error' || m.type === 'session.error' || m.type === 'catalog.result'); };
+    err = await asked({ id: 'e1', kind: 'bogus', cwd: project });
+    ok('an unknown kind is bad_request and lists the available ones', err.type === 'error' && err.code === 'bad_request' && /unknown catalog kind: bogus\. Available: plans, rules/.test(err.message));
+    err = await asked({ id: 'e2', cwd: project });
+    ok('a missing kind too', err.code === 'bad_request' && /\(missing\)/.test(err.message));
+    err = await asked({ id: 'e3', kind: 'toString', cwd: project });
+    ok('a kind that is a property of every object is not a kind', err.code === 'bad_request' && /unknown catalog kind: toString/.test(err.message));
+    err = await asked({ id: 'e4', kind: '__proto__', cwd: project });
+    ok('...nor __proto__', err.code === 'bad_request');
+    err = await asked({ id: 'e5', kind: 'plans' });
+    ok('a missing cwd is bad_cwd', err.code === 'bad_cwd');
+    err = await asked({ id: 'e6', kind: 'plans', cwd: 'relative/dir' });
+    ok('...so is a relative one', err.code === 'bad_cwd');
+    err = await asked({ id: 'e7', kind: 'plans', cwd: path.join(project, 'not-a-dir') });
+    ok('...and one that is not there', err.code === 'bad_cwd');
+    c.send({ type: 'catalog.get', id: 'q1', kind: 'plans', cwd: project, query: 42 });
+    ok('a query that is not a string is no query', (await c.next((m) => m.id === 'q1')).items.length >= 1);
+
+    await c.close();
+    await server.close();
+    fs.rmSync(project, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+}
+
 fs.rmSync(TMP_HOME, { recursive: true, force: true });
 fs.rmSync(PROJECT, { recursive: true, force: true });
 console.log(failures ? `\n${failures} FAILED` : '\nALL PASS');

@@ -9,6 +9,7 @@ const __ = require('y18n')({
     directory: __dirname + '/locales',
     locale: getSystemLocale,
 }).__;
+const { MODES, cliMode } = require('./lib/modes');
 
 let argv = yargs(hideBin(process.argv))
   .scriptName('aicode')
@@ -104,6 +105,16 @@ let argv = yargs(hideBin(process.argv))
     default: false,
     description: __('Force agent mode: a multi-step tool-using loop instead of a single action'),
   })
+  .option('mode', {
+    type: 'string',
+    choices: MODES,
+    default: 'auto',
+    description: __('Interaction mode: auto, agent, plan or ask'),
+  })
+  .option('plan', {
+    type: 'string',
+    description: __('Implement a plan file in agent mode'),
+  })
   .option('quiet', {
     alias: 'q',
     type: 'boolean',
@@ -129,11 +140,15 @@ let argv = yargs(hideBin(process.argv))
   .alias('h', 'help')
   .parse();
 
+// --agent is an alias of --mode agent
+argv.mode = cliMode(argv);
+
 // Initialize the required variables
 const modelsReg = require('./lib/models');
 const openrouter = require('./lib/openrouter');
 const keysLib = require('./lib/keys');
 const skills = require('./lib/skills');
+const plans = require('./lib/plans');
 const currentWorkingDirectory = process.cwd();
 require('dotenv').config();
 const { createUI } = require('./lib/ui');
@@ -152,11 +167,11 @@ const ui = createUI({
     plain: output_redirected ? true : undefined,
 });
 
-// per-session flags (the TUI mutates them live: /local, /agent)
+// per-session flags (the TUI mutates them live: /local, /mode)
 const flags = {
     confirm: !!argv.confirm,
     local: !!argv.local,
-    mode: argv.agent ? 'agent' : 'auto',
+    mode: argv.mode,
     language: argv.language || null,
     quiet: !!argv.quiet,
     debug: !!argv.debug,
@@ -438,6 +453,22 @@ const runOrvix = async () => {
         try { ui.dispose(); } catch (e) { }
         process.exit(res.ok ? 0 : 1);
     }
+    // --plan: implement a plan file in agent mode. It is read before any key prompt, so a wrong path fails at once.
+    let planInput = null;
+    if (argv.plan !== undefined) {
+        if (flags.mode === 'ask' || flags.mode === 'plan') {
+            ui.error(`--plan implements a plan in agent mode: it cannot be combined with --mode ${flags.mode}`);
+            process.exit(1);
+        }
+        try {
+            const plan = plans.readPlanFile(currentWorkingDirectory, argv.plan);
+            planInput = plans.implementText(plan.rel, plan.text, argv.input);
+        } catch (err) {
+            ui.error(err.message);
+            process.exit(1);
+        }
+        flags.mode = 'agent';
+    }
     // load config data
     const db_keys = new EncryptedJsonDB('keys.json');
     let db_keys_data = db_keys.load();
@@ -549,10 +580,11 @@ const runOrvix = async () => {
     // dispatch: one-shot vs. interactive TUI session
     // ---------------------------------------------------------------------------
     const chip = runtime.describeProvider();
-    if (argv.input) {
+    const input = planInput || argv.input;
+    if (input) {
         // one-shot invocation
         ui.header({ name: 'aicode', version: require('./package.json').version, cwd: currentWorkingDirectory, provider: chip.provider, model: chip.model });
-        await runtime.runPrompt(argv.input, ui);
+        await runtime.runPrompt(input, ui, planInput ? { verbatim: true } : undefined);
         // a code-index refresh that was waiting for its debounce starts now and outlives this process
         runtime.orvix.flush();
         ui.dispose();
@@ -574,6 +606,17 @@ const runOrvix = async () => {
             list: () => keysLib.listProviders(db_keys_data),
             set: (provider, value) => keysLib.setKey(provider, value, db_keys_data),
             test: (provider) => keysLib.testKey(provider, db_keys_data),
+        };
+        // /mode: the interaction mode lives in the flags the runtime reads each turn
+        const modeApi = { get: () => flags.mode, set: (mode) => { flags.mode = mode; } };
+        // /plan: the plan files of this project, and the input of an implement turn for one of them
+        const plansApi = {
+            list: () => plans.listPlans(currentWorkingDirectory),
+            latest: () => plans.latestPlan(currentWorkingDirectory),
+            implement: (planPath) => {
+                const plan = plans.readPlanFile(currentWorkingDirectory, planPath);
+                return { path: plan.rel, input: plans.implementText(plan.rel, plan.text) };
+            },
         };
         // /orvix: the code index of this project
         const orvixApi = {
@@ -600,8 +643,8 @@ const runOrvix = async () => {
                 installSkill: (source, onOutput) => skills.installSkill(source, { onOutput }),
                 hasLocal: !!(db_keys_data.LOCAL_BASE_URL && db_keys_data.LOCAL_MODEL),
                 setLocal: (on) => { flags.local = !!on; },
-                agentEnabled: flags.mode === 'agent',
-                setAgent: (on) => { flags.mode = on ? 'agent' : 'auto'; },
+                mode: modeApi,
+                plans: plansApi,
                 colorEnabled: !process.env.NO_COLOR,
                 debug: !!flags.debug,
             });
