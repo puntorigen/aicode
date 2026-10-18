@@ -4,7 +4,7 @@
   "description": "Natural-language CLI assistant for your project folders: ask questions, generate code and docs, powered by extensible markdown actions. Supports OpenAI, Anthropic, Groq and local models (Ollama/LM Studio).",
   "main": "index.js",
   "scripts": {
-    "test": "node test/agent-loop.test.mjs"
+    "test": "node test/run.mjs"
   },
   "bin": {
     "aicode": "./index.js",
@@ -42,6 +42,7 @@
     "@bacali/rtf-parser": "^1.0.1",
     "@clack/prompts": "^1.7.0",
     "@concepto/console": "^1.2.68",
+    "@openrouter/ai-sdk-provider": "^2.10.0",
     "@vitalets/google-translate-api": "^9.2.0",
     "ai": "^6.0.219",
     "cli-diagram": "^0.3.0",
@@ -59,7 +60,9 @@
     "jszip": "^3.10.1",
     "marked": "^12.0.1",
     "marked-terminal": "^7.0.0",
+    "minimatch": "^9.0.9",
     "node-fetch": "^3.3.2",
+    "orvix-cli": "^0.2.0",
     "pdf-parse": "^1.1.1",
     "pdfjs-dist": "^4.2.67",
     "picocolors": "^1.1.1",
@@ -70,6 +73,7 @@
     "screenshot-desktop": "^1.15.0",
     "sharp": "^0.33.5",
     "tmp": "^0.2.3",
+    "ws": "^8.18.0",
     "xlsx": "^0.18.5",
     "xml2js": "^0.6.2",
     "y18n": "^5.0.8",
@@ -78,5 +82,10 @@
   },
   "optionalDependencies": {
     "pythonia": "^1.2.1"
+  },
+  "overrides": {
+    "pythonia": {
+      "ws": "$ws"
+    }
   }
 }

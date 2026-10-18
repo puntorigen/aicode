@@ -2,18 +2,14 @@
 
 const yargs = require('yargs/yargs');
 const { hideBin } = require('yargs/helpers');
-const actionsIndex = require('./actions');
-const personalitiesIndex = require('./personalities');
 const getSystemLocale = require('./helpers/lang')();
-const parsers = require('./parsers');
 const output_redirected = !process.stdout.isTTY;
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const sharp = require("sharp");
 
 const __ = require('y18n')({
     directory: __dirname + '/locales',
     locale: getSystemLocale,
 }).__;
+const { MODES, cliMode } = require('./lib/modes');
 
 let argv = yargs(hideBin(process.argv))
   .scriptName('aicode')
@@ -24,6 +20,63 @@ let argv = yargs(hideBin(process.argv))
       describe: __('Input string to process'),
       type: 'string',
     })
+  })
+  .command('serve', __('Start the Agent Server only (for the IDE extension or other frontends)'), (yargs) => {
+    yargs
+      .option('port', {
+        type: 'number',
+        description: __('Port to listen on (default: server.port in ~/.aicode/config.json; 0 picks a free port)'),
+      })
+      .option('token', {
+        type: 'string',
+        description: __('Handshake token clients must send (default: a random one for this run)'),
+      })
+  })
+  .command('models [query]', __('List available models (OpenRouter catalog plus configured providers)'), (yargs) => {
+    yargs
+      .positional('query', {
+        describe: 'only models whose id or name contains every word (e.g. "sonnet 5.5")',
+        type: 'string',
+      })
+      .option('refresh', {
+        type: 'boolean',
+        default: false,
+        description: __('Refresh the OpenRouter model catalog'),
+      })
+  })
+  .command('keys [action] [provider] [value]', __('Manage provider API keys: list, set, remove, test'), (yargs) => {
+    yargs
+      .positional('action', {
+        describe: 'list (default), set, remove or test',
+        type: 'string',
+      })
+      .positional('provider', {
+        describe: 'openrouter, anthropic, openai, groq or local',
+        type: 'string',
+      })
+      .positional('value', {
+        describe: 'the key (omit it to be asked: a key typed here stays in your shell history)',
+        type: 'string',
+      })
+  })
+  .command('orvix [action] [args..]', __('Run orvix (semantic code index) commands for this project'), (yargs) => {
+    yargs
+      .positional('action', {
+        describe: 'status (default), index, init, gain, map, find, show, who-calls or calls',
+        type: 'string',
+      })
+      .positional('args', {
+        describe: 'what the orvix command takes: a symbol id or name, a query, ...',
+        type: 'string',
+      })
+      .option('agents', {
+        type: 'string',
+        description: __('With init: the agents to set up (cursor,claude,codex,gemini), instead of being asked'),
+      })
+  })
+  .option('model', {
+    type: 'string',
+    description: __('Model for this run: [provider:]model[@effort], e.g. openrouter:anthropic/claude-sonnet-5.5@max or "sonnet 5.5 max"'),
   })
   .option('debug', {
     alias: 'd',
@@ -52,6 +105,16 @@ let argv = yargs(hideBin(process.argv))
     default: false,
     description: __('Force agent mode: a multi-step tool-using loop instead of a single action'),
   })
+  .option('mode', {
+    type: 'string',
+    choices: MODES,
+    default: 'auto',
+    description: __('Interaction mode: auto, agent, plan or ask'),
+  })
+  .option('plan', {
+    type: 'string',
+    description: __('Implement a plan file in agent mode'),
+  })
   .option('quiet', {
     alias: 'q',
     type: 'boolean',
@@ -77,25 +140,20 @@ let argv = yargs(hideBin(process.argv))
   .alias('h', 'help')
   .parse();
 
+// --agent is an alias of --mode agent
+argv.mode = cliMode(argv);
+
 // Initialize the required variables
-const ISO6391 = require('iso-639-1')
-const code2prompt = require('./lib/engine');
 const modelsReg = require('./lib/models');
+const openrouter = require('./lib/openrouter');
+const keysLib = require('./lib/keys');
 const skills = require('./lib/skills');
-const agentsReg = require('./lib/agents');
-const path = require('path');
-const fs = require('fs').promises;
+const plans = require('./lib/plans');
 const currentWorkingDirectory = process.cwd();
-const actionsDirectory = path.join(__dirname, 'actions');
 require('dotenv').config();
-const os = require('os');
-const { z } = require('zod');
 const { createUI } = require('./lib/ui');
 const EncryptedJsonDB = require('./helpers/db');
-const CacheWithTTL = require('./helpers/CacheWithTTL');
-const Translator = require('./helpers/translator');
-const tmp = require('tmp');
-let tmpFiles = {}; // track tmp files, to remove them on finish or ctrl-c
+const { createRuntime, cleanupTmpFiles } = require('./lib/runtime');
 
 if (output_redirected) {
     // disable debugger if output is redirected
@@ -108,56 +166,35 @@ const ui = createUI({
     debug: argv.debug,
     plain: output_redirected ? true : undefined,
 });
-let activeUI = ui; // swapped by the TUI while a session is open
-let debug = (message, data) => { if (argv.debug) activeUI.debug(message, data); };
 
-// trap exit signals
-process.on('SIGINT', () => {
-    try { activeUI && activeUI.dispose && activeUI.dispose(); } catch (e) {}
-    // erase tmp files
-    for (const [key, value] of Object.entries(tmpFiles)) {
-        try { value.removeCallback(); } catch (e) {}
-    }
-    process.exit(0);
-});
-
-// helper methods; TODO move them to helper class
-/**
- * Finds the best matching ratio from a list of supported ratios for the given dimensions.
- *
- * @param {Array<string>} supportedRatios - Array of supported ratios as strings (e.g., ["4:3", "16:9", "3:2"]).
- * @param {number} width - Width in pixels.
- * @param {number} height - Height in pixels.
- * @returns {Object} - An object with the closest 'ratio' as a string and a boolean 'perfect'.
- */
-const findBestRatio = (supportedRatios, width, height) => {
-    if (!width || !height || !Array.isArray(supportedRatios) || supportedRatios.length === 0) {
-        debug("Invalid input. Provide width, height, and a non-empty array of supported ratios.");
-        return null;
-    }
-
-    const actualRatio = width / height;
-
-    let bestMatch = null;
-    let smallestDifference = Infinity;
-
-    for (const ratioString of supportedRatios) {
-        const [numerator, denominator] = ratioString.split(":").map(Number);
-        const ratio = numerator / denominator;
-
-        const difference = Math.abs(actualRatio - ratio);
-
-        if (difference < smallestDifference) {
-            smallestDifference = difference;
-            bestMatch = ratioString;
-        }
-    }
-
-    return {
-        ratio: bestMatch,
-        perfect: smallestDifference < 1e-5 // Treat as perfect if the difference is negligible
-    };
+// per-session flags (the TUI mutates them live: /local, /mode)
+const flags = {
+    confirm: !!argv.confirm,
+    local: !!argv.local,
+    mode: argv.mode,
+    language: argv.language || null,
+    quiet: !!argv.quiet,
+    debug: !!argv.debug,
+    modelPreferences: null,
+    // the ModelSelection of this run: --model, else the one remembered in config.json
+    model: null,
 };
+const debug = (message, data) => { if (flags.debug) ui.debug(message, data); };
+
+// trap exit signals; long-running commands (aicode serve) register async cleanup
+// in `shutdownHooks`, which runs before the process exits
+const shutdownHooks = [];
+const shutdown = async () => {
+    try { ui && ui.dispose && ui.dispose(); } catch (e) {}
+    for (const hook of shutdownHooks) {
+        // a hook that hangs must not keep the process alive
+        try { await Promise.race([hook(), new Promise((resolve) => setTimeout(resolve, 3000))]); } catch (e) {}
+    }
+    // erase tmp files
+    cleanupTmpFiles();
+    process.exit(0);
+};
+process.on('SIGINT', shutdown);
 
 // probe for a local OpenAI-compatible server (Ollama, LM Studio)
 const detectLocalProvider = async () => {
@@ -183,18 +220,229 @@ const detectLocalProvider = async () => {
     return null;
 };
 
-// short provider/model chip for the header/status bar (display only)
-const describeProvider = (db_keys_data) => {
-    if (argv.local && db_keys_data.LOCAL_MODEL) return { provider: 'local', model: db_keys_data.LOCAL_MODEL };
-    for (const p of ['OPENAI', 'ANTHROPIC', 'GROQ']) {
-        if (modelsReg.hasCredentials(p, db_keys_data)) return { provider: p.toLowerCase(), model: modelsReg.modelId(p, 'smart', db_keys_data) };
+// credentials for commands that never prompt (serve, models, keys): keys.json
+// plus the environment, in memory only (environment values are not written back)
+const loadKeysWithoutPrompt = () => keysLib.loadKeys({ onWarn: (message) => ui.note(message, '', 'yellow') });
+
+// aicode serve: only the Agent Server, in the foreground until Ctrl-C
+const runServe = async () => {
+    const { startAgentServer } = require('./lib/server');
+    const config = require('./lib/config').loadConfig();
+    if (argv.port !== undefined && (!Number.isInteger(argv.port) || argv.port < 0 || argv.port > 65535)) {
+        ui.error(new Error(`Invalid --port "${argv.port}": use an integer between 0 and 65535.`));
+        process.exit(1);
     }
-    if (db_keys_data.LOCAL_MODEL) return { provider: 'local', model: db_keys_data.LOCAL_MODEL };
-    return { provider: '', model: '' };
+    const port = argv.port !== undefined ? argv.port : config.server.port;
+    const keysData = loadKeysWithoutPrompt();
+    let server;
+    try {
+        server = await startAgentServer({
+            port,
+            token: argv.token || undefined,
+            debug: (message, data) => { if (flags.debug) ui.debug(message, data); },
+            // the key store every session shares: keys.* messages change it live
+            keysData,
+            // one runtime per session, all sharing the same key store
+            runtimeFactory: (sessionCwd, sessionFlags, extras = {}) => createRuntime({
+                cwd: sessionCwd,
+                keysData,
+                flags: sessionFlags,
+                debug: extras.debug,
+                ide: extras.ide || null,
+                sessionId: extras.sessionId || null,
+            }),
+        });
+    } catch (err) {
+        ui.error(err && err.code === 'EADDRINUSE' ? new Error(`${err.message}. Use --port <n> (0 picks a free port).`) : err);
+        process.exit(1);
+    }
+    shutdownHooks.push(() => server.close());
+    process.on('SIGTERM', shutdown);
+    process.stdout.write(`aicode agent server ready\n  url    ${server.url}\n  token  ${server.token}\nPress Ctrl-C to stop.\n`);
+};
+
+// ---- aicode models / aicode keys ----------------------------------------------------
+// a table on stdout: every column but the last is padded to its widest cell
+const printTable = (rows) => {
+    const widths = rows[0].map((_, col) => Math.max(...rows.map((row) => String(row[col]).length)));
+    for (const row of rows) {
+        const line = row.map((cell, col) => (col === row.length - 1 ? String(cell) : String(cell).padEnd(widths[col]))).join('  ');
+        process.stdout.write(line.trimEnd() + '\n');
+    }
+};
+
+// 200000 -> "200k", 1000000 -> "1M"
+const formatContext = (tokens) => {
+    if (!tokens) return '-';
+    return tokens >= 1000000 ? `${Number((tokens / 1000000).toFixed(1))}M` : `${Math.round(tokens / 1000)}k`;
+};
+
+// aicode models [query] [--refresh]: the picker's list, as a table
+const runModels = async () => {
+    const keysData = loadKeysWithoutPrompt();
+    const config = require('./lib/config').loadConfig();
+    if (keysData.OPENROUTER_KEY || argv.refresh) {
+        // the catalog endpoint is public: --refresh works without a key too
+        try {
+            await openrouter.fetchCatalog({
+                apiKey: keysData.OPENROUTER_KEY,
+                force: !!argv.refresh,
+                onError: (err) => ui.note(`Could not refresh the OpenRouter catalog (${err.message}); using the cached list.`, '', 'yellow'),
+            });
+        } catch (err) {
+            ui.note(`Could not load the OpenRouter catalog: ${err.message}`, '', 'yellow');
+        }
+    }
+    const listing = modelsReg.listModels({ keysData, config, query: argv.query });
+    if (listing.models.length === 0) {
+        process.stderr.write(argv.query ? `No model matches "${argv.query}".\n` : 'No models to list.\n');
+        process.exitCode = 1;
+        return;
+    }
+    const rows = [['n', 'provider', 'id', 'context', '$in/$out per 1M', 'tools', 'efforts', 'groups']];
+    listing.models.forEach((m, i) => {
+        const efforts = m.reasoning
+            ? (Array.isArray(m.reasoning.supportedEfforts) ? m.reasoning.supportedEfforts.join(',') || '-' : (m.reasoning.supportedEfforts === null ? 'any' : '-'))
+            : '-';
+        rows.push([
+            String(i + 1),
+            m.provider.toLowerCase(),
+            m.id,
+            formatContext(m.contextLength),
+            m.pricing ? `$${m.pricing.prompt}/$${m.pricing.completion}` : '-',
+            m.supportsTools ? 'yes' : 'no',
+            efforts,
+            m.groups.join(',') || '-',
+        ]);
+    });
+    printTable(rows);
+    if (!listing.catalog) process.stderr.write('\nThe OpenRouter catalog is not loaded yet: run "aicode keys set openrouter" or "aicode models --refresh".\n');
+    else if (listing.models.some((m) => m.provider === 'OPENROUTER' && !m.available)) process.stderr.write('\nOpenRouter models need a key: run "aicode keys set openrouter".\n');
+    process.stderr.write('Use one with: aicode --model <provider:id[@effort]>   (e.g. --model "sonnet 5.5 max")\n');
+};
+
+// aicode keys [list|set <provider> [value]|remove <provider>|test <provider>]
+const runKeys = async () => {
+    const keysData = loadKeysWithoutPrompt();
+    const action = String(argv.action || 'list').toLowerCase();
+    const say = (line = '') => process.stdout.write(line + '\n');
+    const fail = (err) => { ui.error(err instanceof Error ? err : new Error(String(err))); process.exit(1); };
+    if (action === 'list') {
+        printTable([
+            ['provider', 'configured', 'masked', 'source', 'model'],
+            ...keysLib.listProviders(keysData).map((row) => [row.provider.toLowerCase(), row.configured ? 'yes' : 'no', row.masked || '-', row.source || '-', row.model || '-']),
+        ]);
+        return;
+    }
+    if (!['set', 'remove', 'test'].includes(action)) fail(`Unknown keys action "${argv.action}". Use list, set, remove or test.`);
+    if (!argv.provider) fail(`aicode keys ${action} needs a provider: openrouter, anthropic, openai, groq or local.`);
+    let provider;
+    try { provider = keysLib.parseProvider(argv.provider); } catch (err) { fail(err); }
+
+    if (action === 'set') {
+        let value = argv.value;
+        if (provider === 'LOCAL') {
+            const baseURL = value || await ui.ask('Local server base URL (e.g. http://localhost:11434/v1):');
+            const model = await ui.ask('Model name served there:');
+            value = { baseURL, model };
+        } else if (value === undefined || value === '') {
+            const label = provider === 'OPENROUTER' ? 'Paste your OpenRouter API key (openrouter.ai/settings/keys):' : `Paste your ${provider} API key:`;
+            value = await ui.ask(label, { secret: true });
+        }
+        try { keysLib.setKey(provider, value, keysData); } catch (err) { fail(err); }
+        say(`${provider.toLowerCase()} key saved`);
+        const res = await keysLib.testKey(provider, keysData);
+        say(res.ok ? `ok · ${res.detail}` : `failed · ${res.detail}`);
+        return;
+    }
+    if (action === 'remove') {
+        const row = keysLib.listProviders(keysData).find((r) => r.provider === provider);
+        if (!row.configured) { say(`${provider.toLowerCase()} is not configured`); return; }
+        if (!await ui.confirm(`Remove the ${provider.toLowerCase()} key?`, { initial: false })) { say('kept'); return; }
+        keysLib.removeKey(provider, keysData);
+        say(`${provider.toLowerCase()} key removed`);
+        const envNames = (keysLib.ENV_NAMES[keysLib.PROVIDER_KEYS[provider]] || []).filter((name) => (process.env[name] || '').trim() !== '');
+        if (envNames.length) say(`note: ${envNames.join(' / ')} is still set in your environment and keeps ${provider.toLowerCase()} configured`);
+        return;
+    }
+    // test
+    const res = await keysLib.testKey(provider, keysData);
+    say(res.ok ? `ok · ${res.detail}` : `failed · ${res.detail}`);
+    if (!res.ok) process.exitCode = 1;
+};
+
+// aicode orvix [status|index|init|gain|map|find|show|who-calls|calls] [args…]
+// `status` is aicode's own; every other command is orvix itself, run in this directory with the
+// terminal attached (so `aicode orvix show <id>` prints what `orvix show <id>` prints)
+const runOrvix = async () => {
+    const { createOrvix, AGENT_CHOICES } = require('./lib/orvix');
+    const orvix = createOrvix(currentWorkingDirectory);
+    const action = String(argv.action || 'status').toLowerCase();
+    const say = (line = '') => process.stdout.write(line + '\n');
+    const fail = (message) => { ui.error(new Error(message)); return 1; };
+
+    if (action === 'status') {
+        const status = orvix.status();
+        if (!status.enabled) {
+            say(`orvix is off for this project: ${orvix.reason}`);
+            return 0;
+        }
+        say(`orvix is active in ${currentWorkingDirectory}`);
+        say(`  symbols   ${status.symbols}${status.symbols === 0 ? '  (no index yet: it is built on the first agent run, or run "aicode orvix index")' : ''}`);
+        say(`  indexing  ${status.indexing ? 'yes' : 'no'}`);
+        say(`  changes   ${status.dirty ? 'pending (applied by the next query)' : 'none pending'}`);
+        return 0;
+    }
+
+    // everything after the "orvix" word, minus the option this command owns
+    const raw = hideBin(process.argv);
+    const tail = raw.slice(raw.indexOf('orvix') + 1);
+    const rest = [];
+    for (let i = 0; i < tail.length; i++) {
+        if (tail[i] === '--agents') { i++; continue; }
+        if (tail[i].startsWith('--agents=')) continue;
+        rest.push(tail[i]);
+    }
+
+    let args;
+    if (action === 'init') {
+        const names = String(argv.agents || '').split(',').map((name) => name.trim().toLowerCase()).filter(Boolean);
+        const unknown = names.filter((name) => !AGENT_CHOICES.includes(name));
+        if (unknown.length) return fail(`Unknown agent: ${unknown.join(', ')} (use ${AGENT_CHOICES.join(', ')}).`);
+        args = ['init', ...(names.length ? ['-a', ...names] : [])];
+    } else if (['index', 'gain', 'map', 'find', 'show', 'who-calls', 'calls'].includes(action)) {
+        const at = rest.indexOf(argv.action);
+        args = [action, ...rest.filter((_, i) => i !== at)];
+    } else {
+        return fail(`Unknown orvix command "${argv.action}". Use status, index, init, gain, map, find, show, who-calls or calls.`);
+    }
+    const code = await orvix.passthrough(args);
+    if (code === 127) return fail('Could not run orvix: is the orvix-cli package installed?');
+    return code;
 };
 
 // Process the input
 !(async () => {
+    // these commands never run the interactive key prompts
+    if (argv._[0] === 'serve') {
+        await runServe();
+        return;
+    }
+    if (argv._[0] === 'orvix') {
+        process.exitCode = await runOrvix();
+        ui.dispose();
+        return;
+    }
+    if (argv._[0] === 'models') {
+        await runModels();
+        ui.dispose();
+        return;
+    }
+    if (argv._[0] === 'keys') {
+        await runKeys();
+        ui.dispose();
+        return;
+    }
     // --install-skill: install an Agent Skill from skills.sh and exit (no keys needed)
     if (argv['install-skill']) {
         const src = String(argv['install-skill']).trim();
@@ -205,11 +453,46 @@ const describeProvider = (db_keys_data) => {
         try { ui.dispose(); } catch (e) { }
         process.exit(res.ok ? 0 : 1);
     }
+    // --plan: implement a plan file in agent mode. It is read before any key prompt, so a wrong path fails at once.
+    let planInput = null;
+    if (argv.plan !== undefined) {
+        if (flags.mode === 'ask' || flags.mode === 'plan') {
+            ui.error(`--plan implements a plan in agent mode: it cannot be combined with --mode ${flags.mode}`);
+            process.exit(1);
+        }
+        try {
+            const plan = plans.readPlanFile(currentWorkingDirectory, argv.plan);
+            planInput = plans.implementText(plan.rel, plan.text, argv.input);
+        } catch (err) {
+            ui.error(err.message);
+            process.exit(1);
+        }
+        flags.mode = 'agent';
+    }
     // load config data
     const db_keys = new EncryptedJsonDB('keys.json');
     let db_keys_data = db_keys.load();
+    // an OpenRouter key that came from the environment lives in memory only; it is
+    // kept out of every write to keys.json below
+    let openrouterFromEnv = '';
+    const saveKeys = () => {
+        const copy = { ...db_keys_data };
+        if (openrouterFromEnv && copy.OPENROUTER_KEY === openrouterFromEnv) delete copy.OPENROUTER_KEY;
+        db_keys.save(copy);
+    };
     if (true) {
         // only ask any supported API, if there are no API providers set yet
+        // OPENROUTER: one key for the whole model catalog. It heads the default provider
+        // order, so it is asked first, and only in an interactive terminal.
+        if (!(db_keys_data.OPENROUTER_KEY || '').trim()) {
+            const fromEnv = (process.env.OPENROUTER_KEY || process.env.OPENROUTER_API_KEY || '').trim();
+            if (fromEnv) {
+                openrouterFromEnv = fromEnv;
+                db_keys_data.OPENROUTER_KEY = fromEnv;
+            } else if (process.stdin.isTTY && process.stdout.isTTY) {
+                db_keys_data.OPENROUTER_KEY = await ui.ask('Enter your OPENROUTER API key (or empty if none):', { secret: true });
+            }
+        }
         // OPENAI
         if (!process.env.OPENAI_KEY && !db_keys_data.OPENAI_KEY) {
             db_keys_data.OPENAI_KEY = await ui.ask('Enter your OPENAI API key (or empty if none):');
@@ -235,7 +518,7 @@ const describeProvider = (db_keys_data) => {
             db_keys_data.REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
         }
         // we need at least 1 provider: cloud key or a local model server
-        const has_cloud_key = [db_keys_data.OPENAI_KEY, db_keys_data.GROQ_KEY, db_keys_data.ANTHROPIC_KEY].some((k) => (k || '').trim() != '');
+        const has_cloud_key = [db_keys_data.OPENROUTER_KEY, db_keys_data.OPENAI_KEY, db_keys_data.GROQ_KEY, db_keys_data.ANTHROPIC_KEY].some((k) => (k || '').trim() != '');
         const has_local = (db_keys_data.LOCAL_BASE_URL || '').trim() != '' && (db_keys_data.LOCAL_MODEL || '').trim() != '';
         if (!has_cloud_key && !has_local) {
             // no cloud keys: probe for a local OpenAI-compatible server (Ollama/LM Studio)
@@ -256,10 +539,10 @@ const describeProvider = (db_keys_data) => {
             }
         }
         //
-        db_keys.save(db_keys_data);
+        saveKeys();
     }
     // --local flag: force the LOCAL provider for this run
-    if (argv.local) {
+    if (flags.local) {
         if ((db_keys_data.LOCAL_BASE_URL || '').trim() == '' || (db_keys_data.LOCAL_MODEL || '').trim() == '') {
             const local = await detectLocalProvider();
             if (!local) {
@@ -270,904 +553,100 @@ const describeProvider = (db_keys_data) => {
             if (!chosen) process.exit(1);
             db_keys_data.LOCAL_BASE_URL = local.baseURL;
             db_keys_data.LOCAL_MODEL = chosen;
-            db_keys.save(db_keys_data);
+            saveKeys();
         }
     }
-
-    // Define default configuration for the code2prompt instances
-    const codePrompt = (template, config = {}) => {
-        const instance = new code2prompt({
-            path: currentWorkingDirectory,
-            template,
-            extensions: [],
-            ignore: ["**/node_modules/**", "**/*.gguf", "**/*.pyc", "**/*.js.*", "**/*.css.*", "**/*.chunk.*", "**/*.png", "**/*.jpg", "**/*.gif", "**/package-lock.json", "**/.env", "**/.gitignore", "**/LICENSE"],
-            OPENAI_KEY: argv.local ? '' : db_keys_data.OPENAI_KEY,
-            GROQ_KEY: argv.local ? '' : db_keys_data.GROQ_KEY,
-            ANTHROPIC_KEY: argv.local ? '' : db_keys_data.ANTHROPIC_KEY,
-            LOCAL_BASE_URL: db_keys_data.LOCAL_BASE_URL,
-            LOCAL_MODEL: db_keys_data.LOCAL_MODEL,
-            LOCAL_FAST_MODEL: db_keys_data.LOCAL_FAST_MODEL,
-            LOCAL_API_KEY: db_keys_data.LOCAL_API_KEY,
-            LOCAL_CONTEXT: db_keys_data.LOCAL_CONTEXT,
-            LOCAL_EFFORT: db_keys_data.LOCAL_EFFORT || process.env.LOCAL_EFFORT,
-            // optional smart-model / reasoning-effort overrides
-            OPENAI_MODEL: db_keys_data.OPENAI_MODEL || process.env.OPENAI_MODEL,
-            ANTHROPIC_MODEL: db_keys_data.ANTHROPIC_MODEL || process.env.ANTHROPIC_MODEL,
-            ANTHROPIC_EFFORT: db_keys_data.ANTHROPIC_EFFORT || process.env.ANTHROPIC_EFFORT,
-            GROQ_MODEL: db_keys_data.GROQ_MODEL || process.env.GROQ_MODEL,
-            maxBytesPerFile: argv.local ? 16384 : 65536,
-            custom_viewers: {
-                // register custom file parsers
-                '.docx': async (file) => {
-                    const docx_parser = new parsers.docx(file);
-                    const content = await docx_parser.read();
-                    debug('reading .docx: ' + file, content);
-                    return content;
-                },
-                '.xlsx': async (file) => {
-                    const xlsx_parser = new parsers.xlsx(file);
-                    const content = await xlsx_parser.read();
-                    debug('reading .xlsx: ' + file, content);
-                    return content;
-                },
-                '.pdf': async (file) => {
-                    const pdf_parser = new parsers.pdf(file);
-                    const content = await pdf_parser.read();
-                    debug('reading .pdf: ' + file, content);
-                    return content;
-                },
-                '.rtf': async (file) => {
-                    const rtf_parser = new parsers.rtf(file);
-                    const content = await rtf_parser.read();
-                    debug('reading .rtf: ' + file, content);
-                    return content;
-                }
-            },
-            debugger: argv.debug,
-            ...config
-        });
-        if (argv.local) {
-            instance.setModelPreferences(['LOCAL']);
+    // --model: the model of this run only (the TUI and the IDE are the ones that remember a pick)
+    if (argv.model) {
+        // a Cursor-style phrase ("sonnet 5.5 max") is matched against the catalog: fetch it once
+        // when there is a key and no fresh cache (a failure falls back to the cached list)
+        if ((db_keys_data.OPENROUTER_KEY || '').trim() !== '') {
+            try { await openrouter.fetchCatalog({ apiKey: db_keys_data.OPENROUTER_KEY }); } catch (e) { /* matched against what is cached */ }
         }
-        return instance;
-    }
-    // init replicate if key is set
-    let replicate = null, replicate_models = {};
-    if (db_keys_data.REPLICATE_API_TOKEN) {
-        const replicate_ = require('replicate');
-        replicate = new replicate_({ auth: db_keys_data.REPLICATE_API_TOKEN });
-        replicate_models = {
-            'create-image': async ({ prompt, width, height, ...data }) => {
-                // cost: 333 images per 1 usd; https://replicate.com/black-forest-labs/flux-schnell
-                const best_ratio = findBestRatio(["1:1", "16:9", "21:9", "2:3", "3:2", "4:5", "5:4", "9:16", "9:21"], width, height);
-                const props = {
-                    prompt,
-                    aspect_ratio: best_ratio ? best_ratio.ratio : '1:1', // values: 1:1, 16:9, 21:9, 2:3, 3:2, 4:5, 5:4, 9:16, 9:21
-                    output_format: 'jpg',
-                    output_quality: 100,
-                    num_outputs: 1,
-                    ...data
-                };
-                debug('create-image', props);
-                const response = await replicate.run(
-                    "black-forest-labs/flux-schnell",
-                    {
-                        input: props
-                    }
-                );
-                return {
-                    output: response.output, //jpg
-                    error: response.error,
-                    raw: response
-                };
-            },
-            'create-avatar': async (data) => {
-                const props = {
-                    // define defaults first, and overwrite with data
-                    age: 22,
-                    race: 'american',
-                    gender: 'male',
-                    hair: 'black',
-                    eyes: 'blue',
-                    background: 'green',
-                    shirt: 'blue',
-                    ...data
-                }
-                const prompt = `A complete and realistic neutral face of a ${props.age} years old ${props.race} ${props.gender} facing the camera, that shows the full ${props.hair}-short hair, clean face without hair, with a ${props.shirt} formal shirt, ${props.eyes} eyes and a ${props.background} flat background. Hyper realistic.`;
-                const response = await replicate.run(
-                    "black-forest-labs/flux-schnell",
-                    {
-                        input: {
-                            num_outputs: 1,
-                            aspect_ratio: "1:1",
-                            output_format: "jpg",
-                            output_quality: 100,
-                            prompt: prompt
-                        }
-                    }
-                );
-                return {
-                    output: response.output, //jpg
-                    error: response.error,
-                    raw: response
-                };
-            },
-            'photomaker': async (data) => {
-                // Create photos, paintings and avatars for anyone in any style within seconds.
-                // cost: 52 images per 1 usd; https://replicate.com/tencentarc/photomaker
-                const props = {
-                    prompt: '', // describe the new pose or situation you want to create
-                    input_image: '', // url of image to use as source
-                    num_outputs: 1,
-                    num_steps: 50,
-                    style_name: 'Photographic (Default)',
-                    guidance_scale: 5,
-                    style_strength_ratio: 20,
-                    negative_prompt: 'nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry',
-                    ...data
-                };
-                if (data.image) props.input_image = data.image;
-                const response = await replicate.run(
-                    "tencentarc/photomaker:ddfc2b08d209f9fa8c1eca692712918bd449f695dabb4a958da31802a9570fe4",
-                    {
-                        input: props
-                    }
-                );
-                return {
-                    output: response.output, //png
-                    error: response.error,
-                    raw: response
-                };
-            },
-            'image-to-text': async (data) => {
-                // cost, 344 runs per 1 usd; https://replicate.com/smoretalk/clip-interrogator-turbo
-                // data min: { image, prompt }
-                const props = {
-                    mode: "fast", // turbo, fast, best
-                    image: "", // url to process
-                    style_only: false,
-                    ...data
-                };
-                if (!data) return { specs: props, output_format: 'txt' };
-                const response = await replicate.run(
-                    "smoretalk/clip-interrogator-turbo:f66767bbd5c60b841e05dfb72a176d11bf36eca0554c6ea5d6d705cf617bafe8",
-                    {
-                        input: props
-                    }
-                );
-                return {
-                    output: response.output, //text
-                    error: response.error,
-                    raw: response
-                };
-            },
-            'image-to-video': async (data) => {
-                // cost, 5 videos per 1 usd; https://replicate.com/ali-vilab/i2vgen-xl
-                // data min: { image, prompt }
-                const props = {
-                    image: '',
-                    prompt: '',
-                    max_frames: 16,
-                    guidance_scale: 9,
-                    num_inference_steps: 50,
-                    ...data
-                };
-                if (!data) return { specs: props, output_format: 'mp4' };
-                const response = await replicate.run(
-                    "ali-vilab/i2vgen-xl:5821a338d00033abaaba89080a17eb8783d9a17ed710a6b4246a18e0900ccad4",
-                    {
-                        input: props
-                    }
-                );
-                return {
-                    output: response.output, //mp4
-                    error: response.error,
-                    raw: response
-                };
-            },
-            'text-to-speech': async (data) => {
-                // cost, 142 runs per 1 usd; https://replicate.com/lucataco/xtts-v2
-                // data min: { text, language, speaker }
-                const props = {
-                    // define defaults first, and overwrite with data
-                    text: 'Hola, ¿cómo estás?',
-                    language: 'es',
-                    speaker: 'https://replicate.delivery/pbxt/Jt79w0xsT64R1JsiJ0LQRL8UcWspg5J4RFrU6YwEKpOT1ukS/male.wav',
-                    ...data
-                }
-                if (!data) return {
-                    specs: props, output_format: 'wav', specs_values: {
-                        text: 'text',
-                        language: ['es', 'en', 'fr', 'de', 'it', 'pt', 'pl', 'tr', 'ru', 'nl', 'cs', 'ar', 'zh', 'hu', 'ko', 'hi'],
-                        speaker: ['url_wav', 'url_mp3', 'url_m4a', 'url_ogg', 'url_flv']
-                    }
-                };
-                const response = await replicate.run(
-                    "lucataco/xtts-v2:684bc3855b37866c0c65add2ff39c78f3dea3f4ff103a436465326e0f438d55e",
-                    {
-                        input: props
-                    }
-                );
-                return {
-                    output: response.output, //wav
-                    error: response.error,
-                    raw: response
-                };
-            }
-        };
-    }
-
-    // ---------------------------------------------------------------------------
-    // runPrompt: one full pipeline turn for a single user input.
-    // renderer-agnostic: everything talks to `runUI` (the transcript UI for
-    // one-shot runs, or the Ink TUI's UI adapter for interactive sessions).
-    // ---------------------------------------------------------------------------
-    let agentDefsCache = null;
-    const runPrompt = async (input, runUI, opts = {}) => {
-        const runStart = Date.now();
-        code2prompt.resetUsage();
-        const userOS = os.platform();
-        // 0) single fast-tier pre-flight call: classify input + pick action template + pick personality
-        const general = codePrompt(path.join(actionsDirectory, 'default.md'));
-        if (opts.signal) general.setAbortSignal(opts.signal);
-        if (opts.modelPreferences && !argv.local) general.setModelPreferences(opts.modelPreferences);
-        const user_action = new actionsIndex(input);
-        const personality = new personalitiesIndex(input);
-        await Promise.all([user_action.initialize(), personality.initialize()]);
-        const action_choices = user_action.code_blocks.map((b) => `file:${b.file}\ndescription:\n${b.content}`).join('\n\n');
-        const personality_choices = personality.code_blocks.map((b) => `file:${b.file}\ndescription:\n${b.content}`).join('\n\n');
-        // discover installed Agent Skills (skills.sh / SKILL.md); offered to the
-        // router alongside the built-in action templates
-        const skills_list = skills.discoverSkills(currentWorkingDirectory);
-        const hasSkills = skills_list.length > 0;
-        const skill_choices = skills_list.map((s) => `skill:${s.name}\ndescription:\n${s.description}`).join('\n\n');
-        const analyzeStep = runUI.step('analyzing request');
-        let initial_analysis;
         try {
-            let analysisPrompt =
-`# Analyze the following user input text:
-${input}
-
-# 1. Classify it as an action or a question, detect its language, and provide an english version of it (without translating filenames).
-
-# 2. Select the most suitable action template file for handling the input, from the following available templates and their descriptions:
-${action_choices}
-
-# 3. Select the most suitable personality template file for writing the response, from the following available personalities and their descriptions:
-${personality_choices}
-
-# 4. Decide whether this request needs AGENT MODE. Set needs_agent to true ONLY when fulfilling it clearly requires MULTIPLE dependent steps — e.g. reading and modifying several files, running commands and reacting to their output, or iterating until something builds/tests/works. Set needs_agent to false for a single question, a single-file change, or a one-shot generation that a single action template handles well.`;
-            const analysisShape = {
-                type_of: z.enum(['action', 'question']).describe('Type of the input'),
-                english: z.string().describe('English version of text, without translating filenames'),
-                language: z.enum(['English', 'Spanish', 'Portuguese', 'French', 'Japanese']).describe('language of the given input'),
-                action_file: z.string().describe('just the absolute chosen action template file'),
-                action_reason: z.string().describe('brief reason why the action template is the best for the user input'),
-                personality_file: z.string().describe('just the absolute chosen personality template file'),
-                personality_reason: z.string().describe('brief reason why the personality template is the best for the user input'),
-                needs_agent: z.boolean().describe('true only if the request requires multiple dependent steps (multi-file edits, running/verifying commands, iterating); false for simple one-shot requests'),
-            };
-            if (hasSkills) {
-                analysisPrompt +=
-`
-
-# 5. Only if one of the following installed skills clearly matches the request better than any action template above, set skill_name to that skill's exact name; otherwise set skill_name to an empty string:
-${skill_choices}`;
-                analysisShape.skill_name = z.string().describe('exact name of the installed skill to use, or an empty string when an action template fits better');
-            }
-            initial_analysis = await general.queryLLM(analysisPrompt, z.object(analysisShape), { tier: 'fast' });
+            const checked = modelsReg.checkSelection(modelsReg.parseModelSpec(argv.model, { keysData: db_keys_data }), db_keys_data);
+            if (!checked.ok) throw new Error(checked.message);
+            flags.model = checked.selection;
         } catch (err) {
-            analyzeStep.fail('analyzing request');
-            runUI.statusStop();
-            if (opts.signal && opts.signal.aborted) runUI.note('run cancelled', '', 'yellow');
-            else runUI.error(err);
-            const usage0 = code2prompt.getUsage();
-            runUI.footer({ ...usage0, elapsedMs: Date.now() - runStart });
-            return usage0;
+            ui.error(err);
+            process.exit(1);
         }
-        const input_lang_code = ISO6391.getCode(initial_analysis.data.language);
-        let targetLanguage = argv.language || initial_analysis.data.language;
-        // if targetLanguage length is 2, it's an ISO-639 language code
-        if (targetLanguage && targetLanguage.length == 2) {
-            targetLanguage = ISO6391.getName(targetLanguage);
-        }
-        initial_analysis.data.language_code = ISO6391.getCode(targetLanguage);
+    }
 
-        // resolve the returned file names against the actually available templates
-        const resolveTemplateFile = (chosen, available, fallback) => {
-            let chosen_ = (chosen || '').replace(/^file:/, '').trim();
-            const basename = chosen_.split('/').pop();
-            const match = available.find((b) => b.file === chosen_) ||
-                available.find((b) => b.file.split('/').pop() === basename);
-            if (match) return match.file;
-            debug('template not resolved, using fallback', { chosen, fallback });
-            return fallback;
-        };
-        const action = {
-            data: {
-                file: resolveTemplateFile(initial_analysis.data.action_file, user_action.code_blocks, path.join(actionsDirectory, 'answer-user-question.md')),
-                reason: initial_analysis.data.action_reason,
-            }
-        };
-        const persona = {
-            data: {
-                file: resolveTemplateFile(initial_analysis.data.personality_file, personality.code_blocks, path.join(__dirname, 'personalities', 'default.md')),
-                reason: initial_analysis.data.personality_reason,
-            }
-        };
-        // if the router picked an installed skill, route to the use-skill action
-        // and load its full instructions for the template scope
-        let selectedSkill = null;
-        if (hasSkills && initial_analysis.data.skill_name && String(initial_analysis.data.skill_name).trim()) {
-            const wanted = String(initial_analysis.data.skill_name).trim().toLowerCase();
-            const match = skills_list.find((s) => s.name.toLowerCase() === wanted)
-                || skills_list.find((s) => s.name.toLowerCase().includes(wanted) || wanted.includes(s.name.toLowerCase()));
-            if (match) {
-                try {
-                    const loaded = skills.loadSkill(match);
-                    selectedSkill = { ...match, body: loaded.body, files: loaded.files };
-                    action.data.file = path.join(actionsDirectory, 'use-skill.md');
-                    action.data.reason = `matched installed skill "${match.name}"`;
-                } catch (e) {
-                    debug('failed to load selected skill', { name: match.name, err: e.message });
-                }
-            }
-        }
-        const template_ = action.data.file.split('/').pop().replace('.md', '');
-        const persona_name = persona.data.file.split('/').pop().replace('.md', '');
-        const persona_ = await personality.getPersonality(persona.data.file);
-        const translate = new Translator(template_, initial_analysis.data.language_code);
-        analyzeStep.done(`${selectedSkill ? 'skill:' + selectedSkill.name : template_} · ${persona_name}`);
-        // use the chosen personality as the system prompt for all LLM calls of this run
-        general.setSystemPrompt(persona_);
-        const progress = runUI.progressShim();
-        // central gate for --confirm: ask the user before executing state-changing actions
-        const confirmAction = async (description) => {
-            if (!argv.confirm) return true;
-            return await runUI.confirm(`*aicode wants to:* ${description}. Continue?`);
-        };
-        // declare methods for js code blocks
-        let additional_context = {
-            personality: persona_,
-            confirm_actions: argv.confirm, // prompt user before executing actions
-            confirmAction,
-            replicate_models,
-            findBestRatio,
-            queryLLM: async (question, schema) => {
-                try {
-                    return await general.queryLLM(question, schema);
-                } catch (err) {
-                    debug('Error running queryLLM: ' + err.message, { question });
-                    return false;
-                }
-            },
-            queryContext: async (question, schema) => {
-                return await general.request(question, schema);
-            },
-            queryTemplate: async (template, question = null, custom_context = {}) => {
-                // add .md to 'template' if it doesn't have extension
-                // test cachekey: template+question+currentWorkingDirectory
-                const cache = new CacheWithTTL('template_cache.json');
-                const cacheKey = template + question + currentWorkingDirectory;
-                const cachedTemplate = cache.get(cacheKey);
-                if (cachedTemplate) {
-                    return cachedTemplate;
-                }
-                try {
-                    const template_ = template.endsWith('.md') ? template : `${template}.md`;
-                    const specific = codePrompt(path.join(actionsDirectory, template_));
-                    const resp_ = await specific.request(question, null, {
-                        meta: false
-                    });
-                    cache.set(cacheKey, resp_, 1 * 60 * 60 * 1000); // 1 hour
-                    return resp_;
-                } catch (err) {
-                    runUI.error('Error running template: ' + err.message);
-                }
-            },
-            setModelPreferences: async (order_models) => {
-                if (argv.local) return true; // --local forces the LOCAL provider; ignore template preferences
-                general.setModelPreferences(order_models);
-                // ask model API keys if they don't exit and we need them
-                if (!db_keys_data.OPENAI_KEY && general.model_preferences.includes('OPENAI')) {
-                    db_keys_data.OPENAI_KEY = await runUI.ask('Enter your *OPENAI API key* (or empty if none):');
-                    if ((db_keys_data.OPENAI_KEY || '').trim() != '') {
-                        db_keys.save(db_keys_data);
-                        general.setLLMAPI('OPENAI', db_keys_data.OPENAI_KEY);
-                    }
-                } else if (!db_keys_data.GROQ_KEY && general.model_preferences.includes('GROQ')) {
-                    db_keys_data.GROQ_KEY = await runUI.ask('Enter your *GROQ API key* (or empty if none):');
-                    if ((db_keys_data.GROQ_KEY || '').trim() != '') {
-                        db_keys.save(db_keys_data);
-                        general.setLLMAPI('GROQ', db_keys_data.GROQ_KEY);
-                    }
-                } else if (!db_keys_data.ANTHROPIC_KEY && general.model_preferences.includes('ANTHROPIC')) {
-                    db_keys_data.ANTHROPIC_KEY = await runUI.ask('Enter your *ANTHROPIC API key* (or empty if none):');
-                    if ((db_keys_data.ANTHROPIC_KEY || '').trim() != '') {
-                        db_keys.save(db_keys_data);
-                        general.setLLMAPI('ANTHROPIC', db_keys_data.ANTHROPIC_KEY);
-                    }
-                }
-                //
-                return true;
-            },
-            writeFile: async (file, content) => {
-                const abs_file = path.isAbsolute(file) ? file : path.join(currentWorkingDirectory, file);
-                const display = path.relative(currentWorkingDirectory, abs_file) || file;
-                if (!await confirmAction(`write file #${display}#`)) return false;
-                let existed = false, previous = '';
-                try { previous = await fs.readFile(abs_file, 'utf8'); existed = true; } catch (e) { }
-                if (existed && previous !== content) runUI.diff(display, previous, content);
-                await fs.writeFile(abs_file, content, 'utf8');
-                code2prompt.invalidateTraverseCache(); // project files changed
-                runUI.fileWritten(display, { created: !existed, lines: String(content).split('\n').length });
-                return true;
-            },
-            readFile: async (file) => {
-                return await fs.readFile(path.join(currentWorkingDirectory, file), 'utf8');
-            },
-            editFile: async (file, instructions) => {
-                // diff-based editing: ask the smart model for search/replace blocks and apply them,
-                // instead of regenerating the whole file
-                const abs_file = path.isAbsolute(file) ? file : path.join(currentWorkingDirectory, file);
-                const original = await fs.readFile(abs_file, 'utf8');
-                const edits = await general.queryLLM(
-`# You are editing the file '${file}'. Apply the following instructions by returning a list of exact search/replace edits.
-# Rules:
-# - each 'search' text MUST be copied VERBATIM from the current file contents (including whitespace and indentation) and must be unique within the file
-# - keep each edit as small as possible while remaining unique
-# - the 'replace' text is the full replacement for the matched 'search' text
-
-# instructions:
-${instructions}
-
-# current file contents:
-${original}`,
-                    z.array(z.object({
-                        search: z.string().describe('exact verbatim text to find in the file (must be unique)'),
-                        replace: z.string().describe('replacement text'),
-                    })).describe('list of search/replace edits to apply')
-                );
-                if (!edits || !Array.isArray(edits.data)) return { ok: false, error: 'no edits returned' };
-                let updated = original;
-                const failed = [];
-                for (const edit of edits.data) {
-                    if (edit.search && updated.includes(edit.search)) {
-                        updated = updated.replace(edit.search, edit.replace);
-                    } else {
-                        failed.push(edit);
-                    }
-                }
-                if (updated === original) return { ok: false, error: 'no edits could be applied', failed };
-                const display = path.relative(currentWorkingDirectory, abs_file) || file;
-                runUI.diff(display, original, updated);
-                if (!await confirmAction(`edit file #${display}# (${edits.data.length - failed.length} change(s))`)) return { ok: false, error: 'cancelled by user' };
-                await fs.writeFile(abs_file, updated, 'utf8');
-                code2prompt.invalidateTraverseCache(); // project files changed
-                runUI.fileWritten(display, { created: false, lines: updated.split('\n').length });
-                return { ok: true, applied: edits.data.length - failed.length, failed };
-            },
-            stringifyTreeFromPaths: (paths) => {
-                const tree = general.stringifyTreeFromPaths(paths);
-                return tree;
-            },
-            userDirectory: currentWorkingDirectory,
-            actionsDirectory,
-            // the skill the router selected for this run (null unless use-skill.md)
-            getSelectedSkill: () => selectedSkill,
-            tmp: async (ext = 'tmp') => {
-                const tmpobj = tmp.fileSync({
-                    postfix: '.' + ext
-                });
-                tmpFiles[tmpobj.name] = tmpobj;
-                return {
-                    file: tmpobj.name,
-                    fd: tmpobj.fd,
-                    remove: tmpobj.removeCallback
-                }
-            },
-            sleep,
-            getNpmReadme: async (packageName) => {
-                // test cache
-                const cache = new CacheWithTTL('npm_readme_cache.json');
-                const cachedReadme = cache.get(packageName);
-                if (cachedReadme) {
-                    return cachedReadme;
-                }
-                const fetch = (await import('node-fetch')).default;
-                const url = `https://registry.npmjs.org/${packageName}`;
-                try {
-                    const response = await fetch(url);
-                    if (!response.ok) {
-                        throw new Error('Network response was not ok.');
-                    }
-                    const data = await response.json();
-                    const readme = data.readme;
-                    if (readme) {
-                        cache.set(packageName, readme, 24 * 60 * 60 * 1000); // 24 hours
-                        return readme;
-                    } else {
-                        throw new Error('README not available for this package.');
-                    }
-                } catch (error) {
-                    debug('Failed to fetch README: ' + error.message);
-                    return null;
-                }
-            },
-            renderMD: (text) => {
-                return runUI.renderMarkdown(text);
-            },
-            log: (message, data, color = 'cyan') => {
-                runUI.note(message, data, color);
-            },
-            debug: (message, data, color = 'green') => {
-                runUI.debug(message, data);
-            },
-            joinPaths: (...paths) => {
-                const path_ = require('path');
-                return path_.join(...paths);
-            },
-            // route sandbox console.log through the UI so it never collides with
-            // the transient status line / TUI transcript (keeps ordering correct)
-            console: {
-                log: (message, data) => {
-                    const util = require('util');
-                    let line = (message == null) ? '' : (typeof message === 'string' ? message : util.inspect(message));
-                    if (data !== undefined) line += ' ' + (typeof data === 'string' ? data : util.inspect(data));
-                    runUI.raw(line);
-                },
-                error: (message) => { runUI.error(message); },
-                warn: (message) => { runUI.note(message, '', 'yellow'); },
-                info: (message) => { runUI.note(message, '', 'cyan'); },
-            },
-            db: {
-                engine: EncryptedJsonDB,
-                save: (file, data) => {
-                    const db = new EncryptedJsonDB(file);
-                    let db_data = db.load();
-                    db_data = { ...db_data, ...data };
-                    db.save(db_data);
-                },
-                load: (file) => {
-                    const db = new EncryptedJsonDB(file);
-                    return db.load();
-                },
-            },
-            modules: {
-                screenshot: require('screenshot-desktop'),
-                diagram: require('cli-diagram'),
-                image: {
-                    scale: async (image, width, height) => {
-                        const fs = require('fs'); // sync
-                        try {
-                            // Validate the file exists
-                            if (!fs.existsSync(image)) {
-                                return null;
-                            }
-                            // copy the image to a tmp file
-                            const tmpobj = tmp.fileSync({
-                                postfix: '.jpg'
-                            });
-                            fs.copyFileSync(image, tmpobj.name);
-
-                            // Overwrite the original image file with the scaled image
-                            await sharp(tmpobj.name)
-                                .resize(width, height)
-                                .toFile(image);
-
-                            // Remove the temporary file
-                            tmpobj.removeCallback();
-
-                            debug(`Image scaled to ${width}x${height} and saved at ${image}`);
-                        } catch (error) {
-                            debug(`Error scaling image: ${error.message}`);
-                        }
-                    },
-                    convert: async (image, format) => {
-                        const fs = require('fs'); // sync
-                        try {
-                            if (!fs.existsSync(image)) {
-                                throw new Error(`Image file not found: ${image}`);
-                            }
-
-                            // copy the image to a tmp file
-                            const tmpobj = tmp.fileSync({
-                                postfix: '.jpg'
-                            });
-                            fs.copyFileSync(image, tmpobj.name);
-                            // Extract the file directory, name, and create the new file name
-                            const dir = path.dirname(image);
-                            const ext = path.extname(image);
-                            const baseName = path.basename(image, ext);
-                            const newFileName = `${baseName}.${format}`;
-                            const newFilePath = path.join(dir, newFileName);
-
-                            // Convert and save the image to the new format
-                            await sharp(tmpobj.name).toFormat(format).toFile(newFilePath);
-
-                            // Remove the temporary file
-                            tmpobj.removeCallback();
-
-                            return newFilePath;
-                        } catch (error) {
-                            debug(`Error converting image to ${format}: ${error.message}`);
-                            return null;
-                        }
-                    }
-                },
-                clipboard: {
-                    paste: async () => {
-                        const clipboard = require("copy-paste");
-                        const paste_ = new Promise((resolve, reject) => {
-                            clipboard.paste((error, data) => {
-                                if (error) {
-                                    reject(error);
-                                } else {
-                                    resolve(data);
-                                }
-                            });
-                        });
-                        return await paste_;
-                    },
-                    copy: async (text) => {
-                        const clipboard = require("copy-paste");
-                        const copy_ = new Promise((resolve, reject) => {
-                            clipboard.copy(text, (error) => {
-                                if (error) {
-                                    reject(error);
-                                } else {
-                                    resolve(true);
-                                }
-                            });
-                        });
-                        return await copy_;
-                    }
-                }
-            },
-            t: async (text) => {
-                // try to translate text to the user specified language (using google)
-                try {
-                    const translated = await translate.t(text);
-                    return translated;
-                } catch (err) {
-                    return text;
-                }
-            },
-            ask: async (question) => {
-                // ask the user a question in the input language
-                const translation = new Translator('ui', initial_analysis.data.language_code);
-                const translated = await translation.t(question);
-                return await runUI.ask(translated);
-            },
-            select: async (question, choices) => {
-                // ask the user to choose from a list of choices in the input language
-                const translation = new Translator('ui', initial_analysis.data.language_code);
-                const translated = await translation.t(question);
-                // translate the given choices
-                for (let i = 0; i < choices.length; i++) {
-                    choices[i].title = await translation.t(choices[i].title);
-                }
-                return await runUI.select(translated, choices);
-            },
-            answer: async (text) => {
-                // answer the user in the input language
-                const translation = new Translator('ui', initial_analysis.data.language_code);
-                const translated = await translation.t(text);
-                runUI.answer(translated);
-            },
-            user_prompt: input,
-            english_user_prompt: initial_analysis.data.english,
-            argv, system_os: userOS, progress,
-            language: targetLanguage,
-            language_code: initial_analysis.data.language_code,
-        };
-        // some special methods that need access to the previous context methods
-        additional_context.runTemplate = async (template, question = null, custom_context = {}) => {
-            // add .md to 'template' if it doesn't have extension
-            const template_ = template.endsWith('.md') ? template : `${template}.md`;
-            const specific = codePrompt(path.join(actionsDirectory, template_));
-            return await specific.runTemplate(question, null, { ...additional_context, ...custom_context, ...{ ai: false } });
-        };
-        additional_context.executeBash = async (code) => {
-            try {
-                if (!await confirmAction(`run bash: #${String(code).split('\n')[0].substring(0, 80)}#`)) return false;
-                const exec = await general.executeBash({ ...additional_context }, code);
-                code2prompt.invalidateTraverseCache(); // bash may have changed project files
-                return exec;
-            } catch (err) {
-                return false;
-            }
-        };
-        additional_context.executeNode = async (code) => {
-            try {
-                const exec = await general.executeNode({ ...additional_context }, code);
-                return exec;
-            } catch (err) {
-                return { error: err };
-            }
-        };
-        additional_context.executePython = async (code) => {
-            try {
-                const exec = await general.executePython({ ...additional_context }, code);
-                return exec;
-            } catch (err) {
-                return { error: err };
-            }
-        };
-        additional_context.spawnBash = async (custom_context = {}, code) => {
-            if (!await confirmAction(`run bash: #${String(code).split('\n')[0].substring(0, 80)}#`)) return false;
-            const exec = await general.spawnBash({ ...additional_context, ...custom_context }, code);
-            code2prompt.invalidateTraverseCache(); // bash may have changed project files
-            return exec;
-        };
-        // additional special context methods
-        additional_context.downloadTmp = async (url, file_extension = 'tmp') => {
-            const fetch = (await import('node-fetch')).default;
-            const fs = require('fs');
-
-            // Use the tmp method to generate a temporary file
-            const tmp_file = await additional_context.tmp(file_extension);
-
-            try {
-                const response = await fetch(url);
-
-                if (!response.ok) {
-                    debug(`Failed to fetch the file. Status: ${response.status}`);
-                }
-
-                // Pipe the response data to the temporary file
-                const file_stream = fs.createWriteStream(tmp_file.file);
-                await new Promise((resolve, reject) => {
-                    response.body.pipe(file_stream);
-                    response.body.on("error", reject);
-                    file_stream.on("finish", resolve);
-                });
-
-                debug(`File downloaded successfully to temporary file: ${tmp_file.file}`);
-                return tmp_file; // Return the tmp_file object
-            } catch (error) {
-                debug(`Error downloading file from ${url}:`, error.message);
-                tmp_file.remove(); // Clean up the temp file on error
-                throw error;
-            }
-        };
-
-        additional_context.downloadFile = async (url, output) => {
-            const fetch = (await import('node-fetch')).default;
-            const fs = require('fs');
-            const path = require('path');
-
-            // Resolve the output path relative to the currentWorkingDirectory
-            const resolved_path = path.isAbsolute(output)
-                ? output
-                : path.resolve(currentWorkingDirectory, output);
-
-            // Ensure the directory exists
-            const directory = path.dirname(resolved_path);
-            fs.mkdirSync(directory, { recursive: true });
-
-            try {
-                const response = await fetch(url);
-
-                if (!response.ok) {
-                    debug(`Failed to fetch the file. Status: ${response.status}`);
-                    return null;
-                }
-
-                // Pipe the response data to the specified file
-                const file_stream = fs.createWriteStream(resolved_path);
-                await new Promise((resolve, reject) => {
-                    response.body.pipe(file_stream);
-                    response.body.on("error", reject);
-                    file_stream.on("finish", resolve);
-                });
-
-                debug(`File downloaded successfully to: ${resolved_path}`);
-                return resolved_path; // Return the absolute path of the saved file
-            } catch (error) {
-                debug(`Error downloading file from ${url}:`, error.message);
-                return null;
-            }
-        };
-        // agent mode: run a multi-step tool-using loop (agents/main.md orchestrator)
-        // instead of a single action template. Forced by --agent, auto-selected by
-        // the classifier for multi-step requests, or chosen because a skill matched
-        // (skills are usually multi-step procedures, so they default to the agent
-        // loop — the one-shot use-skill.md path stays as a fallback under --local,
-        // where tool calling may be unavailable).
-        const skillWantsAgent = !!selectedSkill && !argv.local;
-        const wantAgent = argv.agent || skillWantsAgent || (initial_analysis.data.needs_agent === true && !selectedSkill);
-        if (wantAgent) {
-            try {
-                if (!agentDefsCache) agentDefsCache = await agentsReg.loadAgents();
-                await agentsReg.runAgent({
-                    engine: general,
-                    agentName: 'main',
-                    agents: agentDefsCache,
-                    task: initial_analysis.data.english,
-                    ctx: additional_context,
-                    ui: runUI,
-                    history: opts.history || [],
-                    depth: 0,
-                    streamAnswer: true,
-                    skill: selectedSkill || null,
-                });
-            } catch (ErrAgent) {
-                try { runUI.streamEnd(); } catch (e) { }
-                runUI.statusStop();
-                if (opts.signal && opts.signal.aborted) runUI.note('run cancelled', '', 'yellow');
-                else runUI.error(ErrAgent);
-            }
-            const usageA = code2prompt.getUsage();
-            runUI.footer({ ...usageA, elapsedMs: Date.now() - runStart });
-            return usageA;
-        }
-
-        // render the template using the engine
-        const actioncode = codePrompt(action.data.file);
-        if (opts.signal) actioncode.setAbortSignal(opts.signal);
-        if (opts.modelPreferences && !argv.local) actioncode.setModelPreferences(opts.modelPreferences);
-        actioncode.setSystemPrompt(persona_); // personality as system prompt (not injected into user prompt)
-        // stream free-text (schema-less) responses live to the terminal
-        actioncode.setStreamHandler((chunk) => { runUI.streamChunk(chunk); });
-        runUI.status(`generating answer …`);
-        try {
-            await actioncode.runTemplate(initial_analysis.data.english, {}, { ...additional_context, ...{ ai: true } });
-            runUI.streamEnd();
-            runUI.statusStop();
-        } catch (ErrA) {
-            runUI.streamEnd();
-            runUI.statusStop();
-            if (opts.signal && opts.signal.aborted) runUI.note('run cancelled', '', 'yellow');
-            else runUI.error(ErrA);
-        }
-        // usage + cost footer
-        const usage = code2prompt.getUsage();
-        runUI.footer({ ...usage, elapsedMs: Date.now() - runStart });
-        return usage;
-    };
+    // the runtime owns the pipeline (runPrompt) for this session
+    const runtime = createRuntime({ cwd: currentWorkingDirectory, keysData: db_keys_data, flags, debug });
 
     // ---------------------------------------------------------------------------
     // dispatch: one-shot vs. interactive TUI session
     // ---------------------------------------------------------------------------
-    const chip = describeProvider(db_keys_data);
-    if (argv.input) {
+    const chip = runtime.describeProvider();
+    const input = planInput || argv.input;
+    if (input) {
         // one-shot invocation
         ui.header({ name: 'aicode', version: require('./package.json').version, cwd: currentWorkingDirectory, provider: chip.provider, model: chip.model });
-        await runPrompt(argv.input, ui);
+        await runtime.runPrompt(input, ui, planInput ? { verbatim: true } : undefined);
+        // a code-index refresh that was waiting for its debounce starts now and outlives this process
+        runtime.orvix.flush();
         ui.dispose();
     } else if (!output_redirected && process.stdin.isTTY) {
         // no input + interactive terminal: open the TUI session
         ui.dispose();
-        // list available action templates (basenames) for the /actions command
-        let actionNames = [];
-        try {
-            actionNames = require('fs').readdirSync(actionsDirectory)
-                .filter((f) => f.endsWith('.md'))
-                .map((f) => f.replace(/\.md$/, ''))
-                .sort();
-        } catch (e) { }
-        // which providers currently have credentials, for the /model command
-        const availableProviders = ['OPENAI', 'ANTHROPIC', 'GROQ']
-            .filter((p) => modelsReg.hasCredentials(p, db_keys_data));
+        // /model and /keys: everything works on the same live objects the runtime reads
+        // (flags.model, the shared key store), so a change applies to the next turn
+        const modelsApi = {
+            list: (query) => modelsReg.listModels({ keysData: db_keys_data, query }),
+            parse: (spec) => modelsReg.parseModelSpec(spec, { keysData: db_keys_data }),
+            select: (selection) => modelsReg.selectModel(flags, selection, db_keys_data),
+            current: () => flags.model,
+            chip: () => runtime.describeProvider(),
+            hasOpenRouterKey: () => modelsReg.hasCredentials('OPENROUTER', db_keys_data),
+            refresh: () => openrouter.fetchCatalog({ apiKey: db_keys_data.OPENROUTER_KEY, force: true }),
+        };
+        const keysApi = {
+            list: () => keysLib.listProviders(db_keys_data),
+            set: (provider, value) => keysLib.setKey(provider, value, db_keys_data),
+            test: (provider) => keysLib.testKey(provider, db_keys_data),
+        };
+        // /mode: the interaction mode lives in the flags the runtime reads each turn
+        const modeApi = { get: () => flags.mode, set: (mode) => { flags.mode = mode; } };
+        // /plan: the plan files of this project, and the input of an implement turn for one of them
+        const plansApi = {
+            list: () => plans.listPlans(currentWorkingDirectory),
+            latest: () => plans.latestPlan(currentWorkingDirectory),
+            implement: (planPath) => {
+                const plan = plans.readPlanFile(currentWorkingDirectory, planPath);
+                return { path: plan.rel, input: plans.implementText(plan.rel, plan.text) };
+            },
+        };
+        // /orvix: the code index of this project
+        const orvixApi = {
+            status: () => runtime.orvix.status(),
+            reason: () => runtime.orvix.reason,
+            index: () => runtime.orvix.indexNow(),
+            init: (agents) => runtime.orvix.init({ agents }),
+            gain: () => runtime.orvix.gain(),
+            agents: require('./lib/orvix').AGENT_CHOICES,
+        };
         try {
             const { startTui } = await import('./lib/tui/index.mjs');
             await startTui({
-                runPrompt,
+                runPrompt: runtime.runPrompt,
                 version: require('./package.json').version,
                 cwd: currentWorkingDirectory,
                 provider: chip.provider,
                 model: chip.model,
-                actions: actionNames,
-                availableProviders,
-                listSkills: () => skills.discoverSkills(currentWorkingDirectory),
+                actions: runtime.listActions(),
+                models: modelsApi,
+                keys: keysApi,
+                orvix: orvixApi,
+                listSkills: () => skills.discoverSkills(currentWorkingDirectory, { fresh: true }),
                 installSkill: (source, onOutput) => skills.installSkill(source, { onOutput }),
                 hasLocal: !!(db_keys_data.LOCAL_BASE_URL && db_keys_data.LOCAL_MODEL),
-                setLocal: (on) => { argv.local = !!on; },
-                agentEnabled: !!argv.agent,
-                setAgent: (on) => { argv.agent = !!on; },
+                setLocal: (on) => { flags.local = !!on; },
+                mode: modeApi,
+                plans: plansApi,
                 colorEnabled: !process.env.NO_COLOR,
-                debug: !!argv.debug,
+                debug: !!flags.debug,
             });
         } catch (err) {
             ui.error(err);
@@ -1180,7 +659,7 @@ ${original}`,
     }
 })().catch((err) => {
     try {
-        activeUI && activeUI.dispose && activeUI.dispose();
+        ui && ui.dispose && ui.dispose();
         ui.error(err);
     } catch (e) {
         console.error(err);

@@ -11,5 +11,16 @@
   "Only print the final answer (no header, steps or footer)": "Mostrar solo la respuesta final (sin encabezado, pasos ni pie)",
   "Open the interactive TUI session": "Abrir la sesión interactiva TUI",
   "Install an Agent Skill from skills.sh (e.g. owner/repo), then exit": "Instalar una Skill de agente desde skills.sh (ej. owner/repo) y luego salir",
-  "With --install-skill: install the skill globally (~/) instead of into the project": "Con --install-skill: instalar la skill de forma global (~/) en vez de en el proyecto"
+  "With --install-skill: install the skill globally (~/) instead of into the project": "Con --install-skill: instalar la skill de forma global (~/) en vez de en el proyecto",
+  "Start the Agent Server only (for the IDE extension or other frontends)": "Iniciar solo el servidor de agente (para la extensión del IDE u otros frontends)",
+  "Port to listen on (default: server.port in ~/.aicode/config.json; 0 picks a free port)": "Puerto en el que escuchar (por defecto: server.port de ~/.aicode/config.json; 0 elige uno libre)",
+  "Handshake token clients must send (default: a random one for this run)": "Token de conexión que deben enviar los clientes (por defecto: uno aleatorio para esta ejecución)",
+  "Model for this run: [provider:]model[@effort], e.g. openrouter:anthropic/claude-sonnet-5.5@max or \"sonnet 5.5 max\"": "Modelo para esta ejecución: [proveedor:]modelo[@esfuerzo], p. ej. openrouter:anthropic/claude-sonnet-5.5@max o \"sonnet 5.5 max\"",
+  "List available models (OpenRouter catalog plus configured providers)": "Listar los modelos disponibles (catálogo de OpenRouter y proveedores configurados)",
+  "Refresh the OpenRouter model catalog": "Actualizar el catálogo de modelos de OpenRouter",
+  "Manage provider API keys: list, set, remove, test": "Gestionar las claves API de los proveedores: list, set, remove, test",
+  "Run orvix (semantic code index) commands for this project": "Ejecutar comandos de orvix (índice semántico del código) en este proyecto",
+  "With init: the agents to set up (cursor,claude,codex,gemini), instead of being asked": "Con init: los agentes a configurar (cursor,claude,codex,gemini), en vez de preguntar",
+  "Interaction mode: auto, agent, plan or ask": "Modo de interacción: auto, agent, plan o ask",
+  "Implement a plan file in agent mode": "Implementar un archivo de plan en modo agent"
 }
